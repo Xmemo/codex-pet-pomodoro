@@ -1085,6 +1085,7 @@ class CompanionWindow: NSPanel {
     }
 
     func updateVoiceVisualAnchor(windowList: [[String: Any]], primaryHeight: CGFloat) -> Bool {
+        let maxHostWidth = max(1600, NSScreen.screens.map { $0.frame.width }.max() ?? 1600)
         guard let host = windowList.first(where: { window in
             let owner = window[kCGWindowOwnerName as String] as? String ?? ""
             let name = window[kCGWindowName as String] as? String ?? ""
@@ -1094,7 +1095,7 @@ class CompanionWindow: NSPanel {
                   let height = bounds["Height"] as? CGFloat else { return false }
             return (owner == "ChatGPT" || owner == "Codex") &&
                 layer == 3 && name == "ChatGPT" &&
-                width >= 600 && width <= 900 && height >= 1000
+                width >= 600 && width <= maxHostWidth && height >= 1000
         }),
         let bounds = host[kCGWindowBounds as String] as? [String: Any],
         let hostX = bounds["X"] as? CGFloat,
@@ -3051,6 +3052,19 @@ class RendererDelegate: NSObject, NSApplicationDelegate {
             width: 770,
             height: 1000,
             fillColor: (r: 18, g: 20, b: 24, a: 255)
+        ), let wideHostImage = createSyntheticRGBAImage(
+            width: 1128,
+            height: 2069,
+            fillColor: (r: 18, g: 20, b: 24, a: 255),
+            pattern: { x, y in
+                let widePetX = 600
+                let widePetY = 1000
+                guard x >= widePetX, x < widePetX + visibleWidth,
+                      y >= widePetY, y < widePetY + visibleHeight else { return nil }
+                let sourceX = (x - widePetX) * cellWidth / visibleWidth
+                let sourceY = (y - widePetY) * cellHeight / visibleHeight
+                return pattern(sourceX, sourceY)
+            }
         ) else {
             exit(1)
         }
@@ -3103,12 +3117,35 @@ class RendererDelegate: NSObject, NSApplicationDelegate {
         let permissionBounded = window.screenCaptureRequestCount == 1 &&
             !window.trustedPetAnchorFound && (window.timerPanel?.panel.isVisible == false)
 
+        let wideVoiceHost: [String: Any] = [
+            kCGWindowOwnerName as String: "ChatGPT",
+            kCGWindowName as String: "ChatGPT",
+            kCGWindowLayer as String: 3,
+            kCGWindowNumber as String: 102,
+            kCGWindowBounds as String: [
+                "X": CGFloat(1000),
+                "Y": CGFloat(-20),
+                "Width": CGFloat(1128),
+                "Height": CGFloat(2069)
+            ]
+        ]
+        window.mockWindowList = [wideVoiceHost]
+        window.mockHostCaptureImage = wideHostImage
+        window.mockScreenCaptureGranted = true
+        window.mockMediaTime = 105
+        window.alignWithCodexWindow()
+        let wideHostRestored = window.trustedPetAnchorFound &&
+            window.timerPanel?.isAnchorFound == true &&
+            window.timerPanel?.panel.isVisible == true &&
+            abs(window.lastAnchorFrame.minX - 1600) < 1
+
         let result: [String: Any] = [
-            "valid": positive && retainedBriefly && hiddenWhenStale && permissionBounded,
+            "valid": positive && retainedBriefly && hiddenWhenStale && permissionBounded && wideHostRestored,
             "positive": positive,
             "retainedBriefly": retainedBriefly,
             "hiddenWhenStale": hiddenWhenStale,
             "permissionBounded": permissionBounded,
+            "wideHostRestored": wideHostRestored,
             "anchorWidth": window.lastAnchorFrame.width,
             "expectedWidth": visibleWidth
         ]
