@@ -3,6 +3,14 @@ const path = require('path');
 const { validatePathSecurity } = require('./manifest-loader.js');
 
 const VALID_FRAME_EXTENSIONS = new Set(['.png', '.webp']);
+const MAX_FRAME_BYTES = 8 * 1024 * 1024;
+const MAX_TOTAL_FRAME_BYTES = 32 * 1024 * 1024;
+const MAX_FRAME_DIMENSION = 2048;
+const MAX_FRAME_PIXELS = 4 * 1024 * 1024;
+const MAX_TOTAL_DECODED_PIXELS = 16 * 1024 * 1024;
+const MAX_FRAMES_PER_CLIP = 60;
+const MAX_TOTAL_CLIP_FRAMES = 120;
+const MAX_ATLAS_ROWS = 16;
 
 function validateFrameImage(framePath, petDir, binPath, runSwiftFn) {
   const ext = path.extname(framePath).toLowerCase();
@@ -23,6 +31,9 @@ function validateFrameImage(framePath, petDir, binPath, runSwiftFn) {
   if (!stat.isFile()) {
     return { valid: false, error: `Frame path must be a regular file: ${framePath}` };
   }
+  if (stat.size <= 0 || stat.size > MAX_FRAME_BYTES) {
+    return { valid: false, error: `Frame "${framePath}" must be between 1 byte and ${MAX_FRAME_BYTES} bytes` };
+  }
 
   try {
     const info = runSwiftFn(binPath, '--test-frame-validate', check.resolved);
@@ -31,6 +42,11 @@ function validateFrameImage(framePath, petDir, binPath, runSwiftFn) {
     }
     if (!info.hasAlpha) {
       return { valid: false, error: `Frame "${framePath}" must have an alpha channel` };
+    }
+    if (!Number.isInteger(info.width) || !Number.isInteger(info.height) ||
+        info.width < 1 || info.height < 1 || info.width > MAX_FRAME_DIMENSION ||
+        info.height > MAX_FRAME_DIMENSION || info.width * info.height > MAX_FRAME_PIXELS) {
+      return { valid: false, error: `Frame "${framePath}" exceeds the ${MAX_FRAME_DIMENSION}px / ${MAX_FRAME_PIXELS}-pixel decode limit` };
     }
     return { valid: true, width: info.width, height: info.height };
   } catch (err) {
@@ -42,6 +58,9 @@ function validateFrames(framePaths, petDir, binPath, runSwiftFn) {
   const errors = [];
   if (!Array.isArray(framePaths) || framePaths.length === 0) {
     return { valid: false, errors: ['Frame array is empty or missing'] };
+  }
+  if (framePaths.length > MAX_FRAMES_PER_CLIP) {
+    return { valid: false, errors: [`Frame array exceeds ${MAX_FRAMES_PER_CLIP} frames`] };
   }
 
   const results = [];
@@ -115,6 +134,9 @@ function validateCompanionConfig(config, petId, petDir) {
   const clips = config.clips || {};
   const validClipNames = ['enter', 'rest', 'exit'];
   const parsedClips = {};
+  let totalClipFrames = 0;
+  let totalFrameBytes = 0;
+  const measuredFramePaths = new Set();
 
   for (const [name, clip] of Object.entries(clips)) {
     if (!validClipNames.includes(name)) continue;
@@ -134,6 +156,17 @@ function validateCompanionConfig(config, petId, petDir) {
 
     if ((hasFrames && hasAtlasFrames) || (!hasFrames && !hasAtlasFrames)) {
       errors.push(`clip "${name}" must define exactly one non-empty frames or atlasFrames`);
+      continue;
+    }
+
+    const frameCount = hasFrames ? clip.frames.length : clip.atlasFrames.length;
+    if (frameCount > MAX_FRAMES_PER_CLIP) {
+      errors.push(`clip "${name}" exceeds ${MAX_FRAMES_PER_CLIP} frames`);
+      continue;
+    }
+    totalClipFrames += frameCount;
+    if (totalClipFrames > MAX_TOTAL_CLIP_FRAMES) {
+      errors.push(`companion.json exceeds ${MAX_TOTAL_CLIP_FRAMES} total clip frames`);
       continue;
     }
 
@@ -167,6 +200,11 @@ function validateCompanionConfig(config, petId, petDir) {
           const stat = fs.statSync(check.resolved);
           if (!stat.isFile()) {
             errors.push(`clip "${name}" frame path "${framePath}" must be a regular file`);
+          } else if (stat.size <= 0 || stat.size > MAX_FRAME_BYTES) {
+            errors.push(`clip "${name}" frame "${framePath}" must be between 1 byte and ${MAX_FRAME_BYTES} bytes`);
+          } else if (!measuredFramePaths.has(check.resolved)) {
+            measuredFramePaths.add(check.resolved);
+            totalFrameBytes += stat.size;
           }
         }
       }
@@ -189,8 +227,8 @@ function validateCompanionConfig(config, petId, petDir) {
           validAtlas = false;
           break;
         }
-        if (!Number.isInteger(af.row) || af.row < 0) {
-          errors.push(`clip "${name}" atlasFrame row must be a nonnegative integer`);
+        if (!Number.isInteger(af.row) || af.row < 0 || af.row >= MAX_ATLAS_ROWS) {
+          errors.push(`clip "${name}" atlasFrame row must be an integer in [0, ${MAX_ATLAS_ROWS - 1}]`);
           validAtlas = false;
           break;
         }
@@ -204,6 +242,10 @@ function validateCompanionConfig(config, petId, petDir) {
         };
       }
     }
+  }
+
+  if (totalFrameBytes > MAX_TOTAL_FRAME_BYTES) {
+    errors.push(`companion.json frame files exceed ${MAX_TOTAL_FRAME_BYTES} total bytes`);
   }
 
   let restHeightRatio = undefined;
@@ -278,8 +320,12 @@ function resolveClipFrames(configResult, manifestResult, atlasRows, petDir, vali
 
   const hasBin = validatorBinPath && fs.existsSync(validatorBinPath);
 
+  const validatedFrames = new Map();
+  let totalDecodedPixels = 0;
+
   function validateClipRuntime(clip) {
     if (!clip || !Array.isArray(clip.frames) || clip.frames.length === 0) return false;
+    if (clip.frames.length > MAX_FRAMES_PER_CLIP) return false;
     
     let firstWidth = null;
     let firstHeight = null;
@@ -305,14 +351,24 @@ function resolveClipFrames(configResult, manifestResult, atlasRows, petDir, vali
         if (!stat.isFile()) return false;
         
         try {
-          const { execFileSync } = require('child_process');
-          const resStr = execFileSync(validatorBinPath, ['--test-frame-validate', resolvedPath], {
-            encoding: 'utf8',
-            maxBuffer: 1024 * 1024
-          });
-          const info = JSON.parse(resStr.trim());
-          if (!info.valid) return false;
-          if (!info.hasAlpha) return false;
+          let info = validatedFrames.get(resolvedPath);
+          if (!info) {
+            const { execFileSync } = require('child_process');
+            const resStr = execFileSync(validatorBinPath, ['--test-frame-validate', resolvedPath], {
+              encoding: 'utf8',
+              maxBuffer: 1024 * 1024,
+              timeout: 5000,
+            });
+            info = JSON.parse(resStr.trim());
+            if (!info.valid || !info.hasAlpha || !Number.isInteger(info.width) || !Number.isInteger(info.height) ||
+                info.width < 1 || info.height < 1 || info.width > MAX_FRAME_DIMENSION ||
+                info.height > MAX_FRAME_DIMENSION || info.width * info.height > MAX_FRAME_PIXELS) return false;
+            const decodedPixels = info.width * info.height;
+            if (totalDecodedPixels + decodedPixels > MAX_TOTAL_DECODED_PIXELS) return false;
+            totalDecodedPixels += decodedPixels;
+            validatedFrames.set(resolvedPath, info);
+          }
+          if (!info.valid || !info.hasAlpha) return false;
           
           if (firstWidth === null) {
             firstWidth = info.width;
@@ -335,7 +391,7 @@ function resolveClipFrames(configResult, manifestResult, atlasRows, petDir, vali
     for (const af of clip.atlasFrames) {
       if (!af || typeof af !== 'object' || Array.isArray(af)) return false;
       if (!Number.isInteger(af.column) || af.column < 0 || af.column > 7) return false;
-      if (!Number.isInteger(af.row) || af.row < 0) return false;
+      if (!Number.isInteger(af.row) || af.row < 0 || af.row >= MAX_ATLAS_ROWS) return false;
       if (rows !== undefined && rows !== null && af.row >= rows) return false;
     }
     return true;
@@ -411,5 +467,8 @@ module.exports = {
   validateFrameImage,
   validateFrames,
   VALID_FRAME_EXTENSIONS,
+  MAX_FRAME_BYTES,
+  MAX_FRAMES_PER_CLIP,
+  MAX_TOTAL_CLIP_FRAMES,
   getSafeRenderSettings,
 };

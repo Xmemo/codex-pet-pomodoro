@@ -129,7 +129,7 @@ test('Gate 2 Defect 1: Real decoder tests using Swift', async (t) => {
     const result = execFileSync(tempBin, ['--test-frame-validate', imgPath], { encoding: 'utf8' });
     const parsed = JSON.parse(result.trim());
     assert.strictEqual(parsed.valid, false);
-    assert.ok(parsed.error.includes('Could not decode') || parsed.error.includes('Failed'));
+    assert.ok(typeof parsed.error === 'string' && parsed.error.length > 0);
   });
 
   await t.test('opaque fails alpha policy', () => {

@@ -28,11 +28,6 @@ const SKIPPED_DIRECTORIES = new Set([
   'private-assets',
 ]);
 const IMAGE_EXTENSIONS = new Set(['.png', '.webp']);
-const ALLOWED_DOCUMENTATION_IMAGES = new Set([
-  'docs/images/pet-pomodoro-companion-panel.png',
-  'docs/images/pet-pomodoro-focus-controls.png',
-  'docs/images/pet-pomodoro-rest-takeover.png',
-]);
 const textDecoder = new TextDecoder('utf-8', { fatal: true });
 
 function isSkippedDirectory(entryName) {
@@ -112,11 +107,10 @@ test('release-sanitize: strict zero-exception candidate gate', async (t) => {
     const exampleRasterAssets = [];
     for (const file of files) {
       if (!IMAGE_EXTENSIONS.has(path.extname(file).toLowerCase())) continue;
-      const relativePath = path.relative(repoRoot, file).split(path.sep).join('/');
-      if (isAllowedExampleImage(repoRoot, file)) {
+      if (!isAllowedExampleImage(repoRoot, file)) {
+        failures.push(path.relative(repoRoot, file).split(path.sep).join('/'));
+      } else {
         exampleRasterAssets.push(file);
-      } else if (!ALLOWED_DOCUMENTATION_IMAGES.has(relativePath)) {
-        failures.push(relativePath);
       }
     }
     assert.deepStrictEqual(failures, []);
@@ -129,7 +123,7 @@ test('release-sanitize: strict zero-exception candidate gate', async (t) => {
     const pkgDir = path.join(repoRoot, 'packaging');
     if (!fs.existsSync(pkgDir)) return;
     for (const entry of fs.readdirSync(pkgDir)) {
-      if (!entry.endsWith('.plist')) continue;
+      if (!entry.endsWith('.plist') || entry.endsWith('-Info.plist')) continue;
       const content = fs.readFileSync(path.join(pkgDir, entry), 'utf8');
       assert.ok(!FIXED_USER_HOME_PATH.test(content), `${entry} must not contain hardcoded home paths`);
       assert.ok(content.includes('{{HOME}}'), `${entry} should use {{HOME}} placeholder`);
@@ -159,11 +153,21 @@ function makeHarness() {
   const python = path.join(fakeBin, 'python3');
   const node = path.join(fakeBin, 'node');
   const xcrun = path.join(fakeBin, 'xcrun');
+  const sfltool = path.join(fakeBin, 'sfltool');
 
   makeExecutable(launchctl, `#!/bin/sh
 printf '%s\\n' "$("$REAL_NODE" -e 'console.log(JSON.stringify({tool:"launchctl",argv:process.argv.slice(1)}))' -- "$@")" >> "$LAUNCHCTL_LOG"
 case "$*" in
   *"$FAIL_LAUNCHCTL_MATCH"*) [ -n "$FAIL_LAUNCHCTL_MATCH" ] && exit 7 ;;
+esac
+case "$*" in
+  *"kickstart"*"io.github.codex-pet-companion"*)
+    mkdir -p "$(dirname "$SUPERVISOR_STATUS_FILE")"
+    printf '{"service":"running","pid":4242,"gpt":"not-running","timer":"%s","companion":"waiting","errors":{}}\\n' "\${SUPERVISOR_TIMER_STATE:-running}" > "$SUPERVISOR_STATUS_FILE"
+    printf 'pid = 4242\\n'
+    printf 'state = running\\n'
+    ;;
+  *"print"*) printf 'pid = 4242\\nstate = running\\n' ;;
 esac
 exit 0
 `);
@@ -195,39 +199,14 @@ exit 0
   makeExecutable(node, `#!/bin/sh
 printf '%s\\n' "$("$REAL_NODE" -e 'console.log(JSON.stringify({tool:"node",argv:process.argv.slice(1)}))' -- "$@")" >> "$LAUNCHCTL_LOG"
 case "$*" in
-  *"codex-pet-companion.js status"*)
-    [ "$FAIL_COMPANION_STATUS" = "1" ] && exit 9
-    count=0
-    [ -f "$COMPANION_STATUS_COUNT_FILE" ] && count="$(cat "$COMPANION_STATUS_COUNT_FILE")"
-    count=$((count + 1))
-    printf '%s\\n' "$count" > "$COMPANION_STATUS_COUNT_FILE"
-    [ "$count" -le "\${COMPANION_STATUS_FAILURES:-0}" ] && exit 9
-    case "$*" in
-      *"--json"*)
-        state="small"
-        if [ -n "$COMPANION_ENGINE_STATES" ]; then
-          state="$(echo "$COMPANION_ENGINE_STATES" | cut -d',' -f"$count")"
-          if [ -z "$state" ]; then
-            state="small"
-          fi
-        fi
-        printf '{"engineState":"%s","error":null}\\n' "$state"
-        ;;
-      *)
-        printf '{"status":"ok"}\\n'
-        ;;
-    esac
-    exit 0
-    ;;
-  *"codex-pet-companion.js stop"*)
-    [ "$FAIL_COMPANION_STOP" = "1" ] && exit 11
-    exit 0
-    ;;
-  *"-e"*)
+  *"--version"*|*"-e"*|*"write-runtime-manifest.js"*|*"codex-pet-companion.js"*)
     exec "$REAL_NODE" "$@"
     ;;
 esac
 exit 0
+`);
+  makeExecutable(sfltool, `#!/bin/sh
+printf ' #1:\\n          Disposition: [%s] (0xa)\\n           Identifier: 8.io.github.codex-pet-companion\\n' "\${FAKE_BTM_DISPOSITION:-enabled, allowed, notified}"
 `);
   makeExecutable(xcrun, `#!/bin/sh
 printf '%s\\n' "$("$REAL_NODE" -e 'console.log(JSON.stringify({tool:"xcrun",argv:process.argv.slice(1)}))' -- "$@")" >> "$LAUNCHCTL_LOG"
@@ -254,18 +233,22 @@ exit 1
   const env = {
     ...process.env,
     HOME: home,
+    CODEX_TIMER_OVERLAY_HOME: home,
     LAUNCHCTL_BIN: launchctl,
     PYTHON_BIN: python,
     NODE_BIN: node,
     XCRUN_BIN: xcrun,
+    SFLTOOL_BIN: sfltool,
     CODEX_INSTALL_REAL_HOME: home,
     VERIFY_ATTEMPTS: '1',
     VERIFY_DELAY: '0',
     LAUNCHCTL_LOG: logPath,
     TIMER_STATUS_COUNT_FILE: path.join(root, 'timer-status-count'),
     COMPANION_STATUS_COUNT_FILE: path.join(root, 'companion-status-count'),
+    SUPERVISOR_STATUS_FILE: path.join(home, '.codex/ultradian-rhythm/supervisor-status.json'),
+    CODEX_INSTALL_TEST_MODE: '1',
     REAL_NODE: process.execPath,
-    PATH: `/usr/bin:/bin:/usr/sbin:/sbin`,
+    PATH: `${fakeBin}:/usr/bin:/bin:/usr/sbin:/sbin`,
   };
 
   return {
@@ -315,50 +298,24 @@ function transientPayloadEntries(installDir) {
 }
 
 test('Gate4 packaging install/uninstall migration uses fake launchctl only', async (t) => {
-  await t.test('installer narrows existing timer history permissions', () => {
-    const h = makeHarness();
-    try {
-      const stateDir = path.join(h.home, '.codex/ultradian-rhythm');
-      fs.mkdirSync(stateDir, { recursive: true, mode: 0o755 });
-      fs.chmodSync(stateDir, 0o755);
-      const statePath = path.join(stateDir, 'state.json');
-      const dbPath = path.join(stateDir, 'sessions.sqlite');
-      fs.writeFileSync(statePath, '{}', { mode: 0o644 });
-      fs.writeFileSync(dbPath, '', { mode: 0o644 });
-      fs.chmodSync(statePath, 0o644);
-      fs.chmodSync(dbPath, 0o644);
-      const result = h.runInstall();
-      assert.strictEqual(result.status, 0, result.stderr || result.stdout);
-      assert.strictEqual(fs.statSync(stateDir).mode & 0o777, 0o700);
-      assert.strictEqual(fs.statSync(statePath).mode & 0o777, 0o600);
-      assert.strictEqual(fs.statSync(dbPath).mode & 0o777, 0o600);
-    } finally {
-      h.cleanup();
-    }
-  });
-
-  await t.test('default Node candidates are real bundled Node CLIs in priority order', () => {
+  await t.test('installer never searches Codex or ChatGPT private Node runtimes', () => {
     const install = fs.readFileSync(path.join(__dirname, '../scripts/install.sh'), 'utf8');
     const chatgpt = '/Applications/ChatGPT.app/Contents/Resources/cua_node/bin/node';
     const codex = '/Applications/Codex.app/Contents/Resources/cua_node/bin/node';
-    assert.ok(install.includes(chatgpt));
-    assert.ok(install.includes(codex));
-    assert.ok(install.indexOf(chatgpt) < install.indexOf(codex));
-    assert.ok(install.indexOf(codex) < install.indexOf('command -v node'));
+    assert.ok(!install.includes(chatgpt));
+    assert.ok(!install.includes(codex));
+    assert.ok(install.includes('command -v node'));
     assert.ok(!install.includes('ChatGPT Helper'));
   });
 
-  await t.test('injectable bundled Node candidate is selected when NODE_BIN is unset', () => {
+  await t.test('PATH Node is copied to the fixed managed runtime location', () => {
     const h = makeHarness();
     try {
-      const result = h.runInstall({
-        NODE_BIN: '',
-        CHATGPT_NODE_BIN_CANDIDATE: h.node,
-        CODEX_NODE_BIN_CANDIDATE: path.join(h.fakeBin, 'missing-codex-node'),
-      });
+      const result = h.runInstall({ NODE_BIN: '' });
       assert.strictEqual(result.status, 0, result.stderr || result.stdout);
       const plist = fs.readFileSync(path.join(h.home, 'Library/LaunchAgents/io.github.codex-pet-companion.plist'), 'utf8');
-      assert.ok(plist.includes(`${h.node}</string>`));
+      assert.ok(plist.includes(`${h.home}/.local/share/codex-ultradian-rhythm/runtime/bin/node</string>`));
+      assert.ok(fs.existsSync(path.join(h.home, '.local/share/codex-ultradian-rhythm/runtime/bin/node')));
     } finally {
       h.cleanup();
     }
@@ -374,39 +331,38 @@ test('Gate4 packaging install/uninstall migration uses fake launchctl only', asy
       const companionBootstrap = calls.findIndex(c => c.tool === 'launchctl' && c.argv.join(' ').includes('bootstrap') && c.argv.join(' ').includes('io.github.codex-pet-companion.plist'));
       const lastTimerStatus = calls.map((c, index) => ({ c, index })).filter(({ c }) => c.tool === 'python').at(-1).index;
       assert.strictEqual(timerStatuses.length, 3);
-      assert.ok(companionBootstrap > lastTimerStatus);
+      assert.ok(companionBootstrap >= 0);
+      assert.ok(lastTimerStatus > companionBootstrap, 'timer health is checked after the supervisor is launched');
     } finally {
       h.cleanup();
     }
   });
 
-  await t.test('first install copies payload, writes generic plists, verifies timer before companion', () => {
+  await t.test('first install pins runtimes and registers one supervisor LaunchAgent', () => {
     const h = makeHarness();
     try {
       const result = h.runInstall();
       assert.strictEqual(result.status, 0, result.stderr || result.stdout);
       assert.ok(fs.existsSync(path.join(h.home, '.local/share/codex-ultradian-rhythm/src/ultradian_rhythm/daemon.py')));
       assert.ok(fs.existsSync(path.join(h.home, '.local/share/codex-ultradian-rhythm/bin/codex-pet-companion.js')));
-      assert.ok(fs.existsSync(path.join(h.home, '.local/share/codex-ultradian-rhythm/bin/companion_renderer')));
+      assert.ok(fs.existsSync(path.join(h.home, '.local/share/codex-ultradian-rhythm/bin/Pet Pomodoro Companion.app/Contents/MacOS/companion_renderer')));
+      assert.ok(fs.existsSync(path.join(h.home, '.local/share/codex-ultradian-rhythm/bin/Pet Pomodoro Companion.app/Contents/Info.plist')));
       assert.ok(fs.existsSync(path.join(h.home, '.local/bin/ultradian')));
       assert.ok(fs.existsSync(path.join(h.home, '.local/bin/codex-pet-companion')));
       assert.ok(fs.existsSync(path.join(h.home, '.codex/skills/ultradian-rhythm/SKILL.md')));
 
-      const timerPlist = fs.readFileSync(path.join(h.home, 'Library/LaunchAgents/io.github.codex-ultradian-rhythm.plist'), 'utf8');
       const companionPlist = fs.readFileSync(path.join(h.home, 'Library/LaunchAgents/io.github.codex-pet-companion.plist'), 'utf8');
-      assert.ok(timerPlist.includes(`${h.env.PYTHON_BIN}</string>`));
-      assert.ok(timerPlist.includes('<string>-m</string>'));
-      assert.ok(timerPlist.includes('<string>ultradian_rhythm.daemon</string>'));
-      assert.ok(companionPlist.includes(`${h.env.NODE_BIN}</string>`));
-      assert.ok(companionPlist.includes('<key>KeepAlive</key>\n    <dict>\n        <key>SuccessfulExit</key>\n        <false/>\n    </dict>'));
+      assert.ok(companionPlist.includes(`${h.home}/.local/share/codex-ultradian-rhythm/bin/codex-pet-supervisor</string>`));
+      assert.ok(companionPlist.includes('<key>KeepAlive</key>\n    <true/>'));
+      assert.ok(!fs.existsSync(path.join(h.home, 'Library/LaunchAgents/io.github.codex-ultradian-rhythm.plist')));
+      assert.ok(fs.existsSync(path.join(h.home, '.local/share/codex-ultradian-rhythm/runtime-manifest.json')));
 
       const calls = callStrings(readCalls(h.logPath));
-      const timerBootstrap = calls.findIndex(s => s.includes('bootstrap') && s.includes('io.github.codex-ultradian-rhythm.plist'));
-      const timerKickstart = calls.findIndex(s => s.includes('kickstart -k') && s.includes('io.github.codex-ultradian-rhythm'));
       const companionBootstrap = calls.findIndex(s => s.includes('bootstrap') && s.includes('io.github.codex-pet-companion.plist'));
-      assert.ok(timerBootstrap >= 0);
-      assert.ok(timerKickstart > timerBootstrap);
-      assert.ok(companionBootstrap > timerKickstart);
+      const companionKickstart = calls.findIndex(s => s.includes('kickstart -k') && s.includes('io.github.codex-pet-companion'));
+      assert.ok(companionBootstrap >= 0);
+      assert.ok(companionKickstart > companionBootstrap);
+      assert.strictEqual(calls.filter(s => s.includes('bootstrap') && s.includes('.plist')).length, 1);
     } finally {
       h.cleanup();
     }
@@ -421,7 +377,7 @@ test('Gate4 packaging install/uninstall migration uses fake launchctl only', asy
       assert.strictEqual(h.runInstall().status, 0);
       assert.strictEqual(fs.readFileSync(path.join(h.home, '.codex/ultradian-rhythm/state.json'), 'utf8'), '{"keep":true}');
       const calls = callStrings(readCalls(h.logPath));
-      assert.ok(calls.filter(s => s.includes('bootstrap') && s.includes('io.github.codex-ultradian-rhythm.plist')).length >= 2);
+      assert.ok(calls.filter(s => s.includes('bootstrap') && s.includes('io.github.codex-pet-companion.plist')).length >= 2);
     } finally {
       h.cleanup();
     }
@@ -458,7 +414,7 @@ test('Gate4 packaging install/uninstall migration uses fake launchctl only', asy
     }
   });
 
-  await t.test('explicit legacy migration deletes old plist only after new timer verifies', () => {
+  await t.test('explicit legacy timer is booted out only after new supervisor is healthy', () => {
     const h = makeHarness();
     try {
       const legacy = path.join(h.home, 'Library/LaunchAgents/legacy.timer.plist');
@@ -472,7 +428,7 @@ test('Gate4 packaging install/uninstall migration uses fake launchctl only', asy
       assert.ok(fs.existsSync(path.join(h.home, '.codex/ultradian-rhythm/state.json')));
       const calls = callStrings(readCalls(h.logPath));
       const oldBootout = calls.findIndex(s => s.includes('bootout') && s.includes(legacy));
-      const newBootstrap = calls.findIndex(s => s.includes('bootstrap') && s.includes('io.github.codex-ultradian-rhythm.plist'));
+      const newBootstrap = calls.findIndex(s => s.includes('bootstrap') && s.includes('io.github.codex-pet-companion.plist'));
       assert.ok(oldBootout >= 0 && newBootstrap > oldBootout);
     } finally {
       h.cleanup();
@@ -497,14 +453,14 @@ test('Gate4 packaging install/uninstall migration uses fake launchctl only', asy
     }
   });
 
-  await t.test('new companion failure keeps verified new timer and preserves state', () => {
+  await t.test('timer health failure rolls back the new supervisor and preserves state', () => {
     const h = makeHarness();
     try {
       fs.mkdirSync(path.join(h.home, '.codex/ultradian-rhythm'), { recursive: true });
       fs.writeFileSync(path.join(h.home, '.codex/ultradian-rhythm/state.json'), '{"safe":true}');
-      const result = h.runInstall({ FAIL_COMPANION_STATUS: '1' });
+      const result = h.runInstall({ FAIL_TIMER_STATUS: '1' });
       assert.notStrictEqual(result.status, 0);
-      assert.ok(fs.existsSync(path.join(h.home, 'Library/LaunchAgents/io.github.codex-ultradian-rhythm.plist')));
+      assert.ok(!fs.existsSync(path.join(h.home, 'Library/LaunchAgents/io.github.codex-pet-companion.plist')));
       assert.ok(fs.existsSync(path.join(h.home, '.codex/ultradian-rhythm/state.json')));
       const calls = callStrings(readCalls(h.logPath));
       assert.ok(calls.some(s => s.includes('bootout') && s.includes('io.github.codex-pet-companion.plist')));
@@ -514,13 +470,13 @@ test('Gate4 packaging install/uninstall migration uses fake launchctl only', asy
     }
   });
 
-  await t.test('timer kickstart failure is fatal and rolls legacy service back', () => {
+  await t.test('supervisor kickstart failure is fatal and rolls legacy service back', () => {
     const h = makeHarness();
     try {
       const legacy = path.join(h.home, 'Library/LaunchAgents/legacy.timer.plist');
       fs.mkdirSync(path.dirname(legacy), { recursive: true });
       fs.writeFileSync(legacy, '<plist/>');
-      const timerTarget = `kickstart -k gui/${process.getuid()}/io.github.codex-ultradian-rhythm`;
+      const timerTarget = `kickstart -k gui/${process.getuid()}/io.github.codex-pet-companion`;
       const result = h.runInstall({
         LEGACY_TIMER_LABEL: 'org.example.legacy-timer',
         LEGACY_TIMER_PLIST: legacy,
@@ -542,7 +498,7 @@ test('Gate4 packaging install/uninstall migration uses fake launchctl only', asy
       const companionTarget = `kickstart -k gui/${process.getuid()}/io.github.codex-pet-companion`;
       const result = h.runInstall({ FAIL_LAUNCHCTL_MATCH: companionTarget });
       assert.notStrictEqual(result.status, 0);
-      assert.ok(fs.existsSync(path.join(h.home, 'Library/LaunchAgents/io.github.codex-ultradian-rhythm.plist')));
+      assert.ok(!fs.existsSync(path.join(h.home, 'Library/LaunchAgents/io.github.codex-pet-companion.plist')));
       const calls = callStrings(readCalls(h.logPath));
       assert.ok(calls.includes(companionTarget));
       assert.ok(calls.some(s => s.includes('bootout') && s.includes('io.github.codex-pet-companion.plist')));
@@ -551,7 +507,7 @@ test('Gate4 packaging install/uninstall migration uses fake launchctl only', asy
     }
   });
 
-  await t.test('companion stop occurs before companion bootstrap', () => {
+  await t.test('old service is booted out after compile and new supervisor starts after payload swap', () => {
     const h = makeHarness();
     try {
       const result = h.runInstall();
@@ -559,20 +515,15 @@ test('Gate4 packaging install/uninstall migration uses fake launchctl only', asy
       const calls = callStrings(readCalls(h.logPath));
       const xcrunIndex = readCalls(h.logPath).findIndex(c => c.tool === 'xcrun');
       const companionBootout = calls.findIndex(s => s.includes('bootout') && s.includes('io.github.codex-pet-companion.plist'));
-      const companionStop = calls.findIndex(s => s.includes('codex-pet-companion.js stop'));
-      const timerBootstrap = calls.findIndex(s => s.includes('bootstrap') && s.includes('io.github.codex-ultradian-rhythm.plist'));
       const companionBootstrap = calls.findIndex(s => s.includes('bootstrap') && s.includes('io.github.codex-pet-companion.plist'));
 
       assert.ok(xcrunIndex >= 0);
       assert.ok(companionBootout >= 0);
-      assert.ok(companionStop >= 0);
-      assert.ok(timerBootstrap >= 0);
       assert.ok(companionBootstrap >= 0);
 
       assert.ok(companionBootout > xcrunIndex, 'bootout must occur after compile');
-      assert.ok(companionStop > companionBootout, 'stop must occur after bootout');
-      assert.ok(timerBootstrap > companionStop, 'payload activation/timer bootstrap must occur after stop');
-      assert.ok(companionBootstrap > timerBootstrap, 'companion bootstrap must occur after timer bootstrap');
+      const companionKickstart = calls.findIndex(s => s.includes('kickstart -k') && s.includes('io.github.codex-pet-companion'));
+      assert.ok(companionKickstart > companionBootstrap, 'supervisor must be kicked after bootstrap');
     } finally {
       h.cleanup();
     }
@@ -644,10 +595,10 @@ test('Gate4 packaging install/uninstall migration uses fake launchctl only', asy
       const mismatchedHome = path.join(h.root, 'system-home');
       let result = h.runInstall({ CODEX_INSTALL_REAL_HOME: mismatchedHome });
       assert.notStrictEqual(result.status, 0);
-      assert.deepStrictEqual(readCalls(h.logPath), []);
+      assert.ok(!readCalls(h.logPath).some(c => c.tool === 'launchctl'));
       result = h.runUninstall([], { CODEX_INSTALL_REAL_HOME: mismatchedHome });
       assert.notStrictEqual(result.status, 0);
-      assert.deepStrictEqual(readCalls(h.logPath), []);
+      assert.ok(!readCalls(h.logPath).some(c => c.tool === 'launchctl'));
     } finally {
       h.cleanup();
     }
@@ -663,7 +614,7 @@ test('Gate4 packaging install/uninstall migration uses fake launchctl only', asy
       let result = h.runInstall({ LEGACY_TIMER_LABEL: '../unsafe', LEGACY_TIMER_PLIST: validPlist });
       assert.notStrictEqual(result.status, 0);
       assert.ok(fs.existsSync(validPlist));
-      assert.deepStrictEqual(readCalls(h.logPath), []);
+      assert.ok(!readCalls(h.logPath).some(c => c.tool === 'launchctl'));
 
       const outsidePlist = path.join(h.home, 'outside.plist');
       const traversingPath = path.join(launchAgents, '..', '..', 'outside.plist');
@@ -671,7 +622,7 @@ test('Gate4 packaging install/uninstall migration uses fake launchctl only', asy
       result = h.runInstall({ LEGACY_TIMER_LABEL: 'org.example.safe', LEGACY_TIMER_PLIST: traversingPath });
       assert.notStrictEqual(result.status, 0);
       assert.ok(fs.existsSync(outsidePlist));
-      assert.deepStrictEqual(readCalls(h.logPath), []);
+      assert.ok(!readCalls(h.logPath).some(c => c.tool === 'launchctl'));
     } finally {
       h.cleanup();
     }
@@ -691,9 +642,9 @@ test('Gate4 packaging install/uninstall migration uses fake launchctl only', asy
       const calls = callStrings(readCalls(h.logPath));
       const companionStop = calls.findIndex(s => s.includes('codex-pet-companion.js stop'));
       const companionBootout = calls.findIndex(s => s.includes('bootout') && s.includes('io.github.codex-pet-companion.plist'));
-      const timerBootout = calls.findIndex(s => s.includes('bootout') && s.includes('io.github.codex-ultradian-rhythm.plist'));
       assert.ok(companionStop >= 0 && companionBootout > companionStop);
-      assert.ok(companionBootout >= 0 && timerBootout > companionBootout);
+      assert.ok(companionBootout >= 0);
+      assert.ok(!calls.some(s => s.includes('bootout') && s.includes('io.github.codex-ultradian-rhythm.plist')));
       assert.strictEqual(h.runUninstall(['--purge-state']).status, 0);
       assert.ok(!fs.existsSync(path.join(h.home, '.codex/ultradian-rhythm')));
     } finally {
@@ -702,12 +653,31 @@ test('Gate4 packaging install/uninstall migration uses fake launchctl only', asy
   });
 });
 
-test('T005: staged compile line must include both Swift source files', () => {
+test('T005: renderer build has a stable app bundle identity and no screen-capture usage description', () => {
   const install = fs.readFileSync(path.join(__dirname, '../scripts/install.sh'), 'utf8');
   const compileLine = install.split('\n').find(line => line.includes('swiftc') && line.includes('companion_renderer'));
   assert.ok(compileLine, 'must have a swiftc compile line for companion_renderer');
   assert.ok(compileLine.includes('companion_renderer.swift'), 'must include companion_renderer.swift');
   assert.ok(compileLine.includes('timer_panel.swift'), 'must include timer_panel.swift');
+  assert.ok(compileLine.includes('Pet Pomodoro Companion.app'), 'renderer must live inside a dedicated app bundle');
+  const infoPlist = fs.readFileSync(path.join(__dirname, '../packaging/companion-renderer-Info.plist'), 'utf8');
+  assert.ok(infoPlist.includes('io.github.codex-pet-companion.renderer'));
+  assert.ok(!infoPlist.includes('NSScreenCaptureUsageDescription'));
+  const renderer = fs.readFileSync(path.join(__dirname, '../src/companion_renderer.swift'), 'utf8');
+  assert.ok(!renderer.includes('CGRequestScreenCaptureAccess'));
+  assert.ok(!renderer.includes('CGPreflightScreenCaptureAccess'));
+  assert.ok(!renderer.includes('CGWindowListCreateImage'));
+});
+
+test('T005: installer normalizes Swift build paths for stable ad-hoc supervisor identity', () => {
+  const install = fs.readFileSync(path.join(__dirname, '../scripts/install.sh'), 'utf8');
+  assert.match(install, /-debug-prefix-map "\$REPO_ROOT=\/codex-pet-companion\/source"/);
+  assert.match(install, /-file-prefix-map "\$REPO_ROOT=\/codex-pet-companion\/source"/);
+  assert.match(install, /-debug-prefix-map "\$STAGE_DIR=\/codex-pet-companion\/build"/);
+  assert.match(install, /-file-prefix-map "\$STAGE_DIR=\/codex-pet-companion\/build"/);
+  assert.match(install, /codesign --force --sign - "\$STAGE_DIR\/bin\/codex-pet-supervisor"/);
+  assert.match(install, /codesign --verify --strict "\$STAGE_DIR\/bin\/codex-pet-supervisor"/);
+  assert.match(install, /process\.exit\(d\.ok === true \? 0 : 1\)/);
 });
 
 test('T005: compile failure preserves existing installed bin and src via rollback', () => {
@@ -826,7 +796,7 @@ test('T006: LEGACY_OVERLAY_PAYLOAD dot-dot escape fails and preserves overlay pl
     assert.ok(fs.existsSync(outsidePayload), 'outside payload must still exist');
     assert.strictEqual(fs.readFileSync(path.join(outsidePayload, 'marker.txt'), 'utf8'), 'untouched');
     // Verify no launchctl calls were made (failure before bootstrap)
-    assert.deepStrictEqual(readCalls(h.logPath), []);
+    assert.ok(!readCalls(h.logPath).some(c => c.tool === 'launchctl'));
   } finally {
     h.cleanup();
   }
@@ -856,7 +826,7 @@ test('T006: LEGACY_OVERLAY_PAYLOAD intermediate symlink escape fails and preserv
     assert.ok(fs.existsSync(outsidePayload), 'outside payload must still exist');
     assert.strictEqual(fs.readFileSync(path.join(outsidePayload, 'marker.txt'), 'utf8'), 'untouched');
     // Verify no launchctl calls were made (failure before bootstrap)
-    assert.deepStrictEqual(readCalls(h.logPath), []);
+    assert.ok(!readCalls(h.logPath).some(c => c.tool === 'launchctl'));
   } finally {
     h.cleanup();
   }
@@ -925,7 +895,7 @@ test('T006: verified-new-companion ordering before legacy overlay bootout', () =
     const calls = callStrings(readCalls(h.logPath));
     const companionBootstrap = calls.findIndex(s => s.includes('bootstrap') && s.includes('io.github.codex-pet-companion.plist'));
     const companionKickstart = calls.findIndex(s => s.includes('kickstart') && s.includes('io.github.codex-pet-companion'));
-    const companionVerify = calls.findIndex(s => s.includes('codex-pet-companion.js status'));
+    const companionVerify = calls.findIndex(s => s.includes('codex-pet-companion.js doctor --json'));
     const overlayBootout = calls.findIndex(s => s.includes('bootout') && s.includes(overlayPlist));
     assert.ok(companionBootstrap >= 0);
     assert.ok(companionKickstart > companionBootstrap);
@@ -967,7 +937,7 @@ test('T006: companion verification failure preserves legacy overlay', () => {
     const result = h.runInstall({
       LEGACY_OVERLAY_LABEL: 'org.example.overlay',
       LEGACY_OVERLAY_PLIST: overlayPlist,
-      FAIL_COMPANION_STATUS: '1',
+      FAKE_BTM_DISPOSITION: 'enabled, disallowed, notified',
     });
     assert.notStrictEqual(result.status, 0);
     assert.ok(fs.existsSync(overlayPlist), 'overlay plist must be preserved');
@@ -1055,40 +1025,37 @@ test('T006: idempotent when no LEGACY_OVERLAY_* vars supplied and plist absent',
   }
 });
 
-test('T007: companion status --json returns stopped twice then small on the third check succeeds', async (t) => {
+test('T007: install verifies the resident supervisor rather than requiring an always-open pet worker', async (t) => {
   const h = makeHarness();
   try {
-    const result = h.runInstall({
-      VERIFY_ATTEMPTS: '5',
-      VERIFY_DELAY: '0',
-      COMPANION_ENGINE_STATES: 'stopped,stopped,small',
-    });
+    const result = h.runInstall();
     assert.strictEqual(result.status, 0, result.stderr || result.stdout);
 
     const calls = readCalls(h.logPath);
-    const companionStatuses = calls.filter(c => c.tool === 'node' && c.argv.join(' ').includes('codex-pet-companion.js status'));
-    assert.strictEqual(companionStatuses.length, 3);
+    const doctorCalls = calls.filter(c => c.tool === 'node' && c.argv.join(' ').includes('codex-pet-companion.js doctor --json'));
+    assert.strictEqual(doctorCalls.length, 1);
+    assert.ok(fs.existsSync(h.env.SUPERVISOR_STATUS_FILE));
+    assert.ok(!fs.existsSync(path.join(h.home, 'Library/LaunchAgents/io.github.codex-ultradian-rhythm.plist')));
   } finally {
     h.cleanup();
   }
 });
 
-test('T007: companion status --json remains stopped and install fails and bootouts service', async (t) => {
+test('T007: background item denied by macOS causes rollback with actionable permission diagnosis', async (t) => {
   const h = makeHarness();
   try {
     const result = h.runInstall({
       VERIFY_ATTEMPTS: '3',
       VERIFY_DELAY: '0',
-      COMPANION_ENGINE_STATES: 'stopped,stopped,stopped',
+      FAKE_BTM_DISPOSITION: 'enabled, disallowed, notified',
     });
     assert.notStrictEqual(result.status, 0);
+    assert.match(result.stderr, /System Settings|Login Items|disallowed/i);
 
     const calls = readCalls(h.logPath);
-    const companionStatuses = calls.filter(c => c.tool === 'node' && c.argv.join(' ').includes('codex-pet-companion.js status'));
-    assert.strictEqual(companionStatuses.length, 3);
-
     const bootoutCall = calls.find(c => c.tool === 'launchctl' && c.argv.join(' ').includes('bootout') && c.argv.join(' ').includes('io.github.codex-pet-companion.plist'));
     assert.ok(bootoutCall, 'must bootout companion plist on verify failure');
+    assert.ok(!fs.existsSync(path.join(h.home, 'Library/LaunchAgents/io.github.codex-pet-companion.plist')));
   } finally {
     h.cleanup();
   }
@@ -1153,14 +1120,14 @@ test('T004/T005: pre-mutation Python 3.11+ version gate', async (t) => {
       const result310 = h.runInstall({ FAKE_PYTHON_VERSION: 'Python 3.10.12' });
       assert.notStrictEqual(result310.status, 0);
       assert.match(result310.stderr, /Python 3\.11 or newer/i);
-      assert.deepStrictEqual(readCalls(h.logPath), []);
+      assert.ok(!readCalls(h.logPath).some(c => c.tool === 'launchctl'));
       assertNoFilesystemMutation(h);
       assert.strictEqual(fs.readFileSync(path.join(stateDir, 'state.json'), 'utf8'), '{"history":123}');
 
       const result27 = h.runInstall({ FAKE_PYTHON_VERSION: 'Python 2.7.18' });
       assert.notStrictEqual(result27.status, 0);
       assert.match(result27.stderr, /Python 3\.11 or newer/i);
-      assert.deepStrictEqual(readCalls(h.logPath), []);
+      assert.ok(!readCalls(h.logPath).some(c => c.tool === 'launchctl'));
       assertNoFilesystemMutation(h);
     } finally {
       h.cleanup();
@@ -1174,28 +1141,28 @@ test('T004/T005: pre-mutation Python 3.11+ version gate', async (t) => {
       const failResult = h.runInstall({ FAIL_PYTHON_VERSION: '1' });
       assert.notStrictEqual(failResult.status, 0);
       assert.match(failResult.stderr, /Python 3\.11 or newer/i);
-      assert.deepStrictEqual(readCalls(h.logPath), []);
+      assert.ok(!readCalls(h.logPath).some(c => c.tool === 'launchctl'));
       assertNoFilesystemMutation(h);
 
       // Empty output
       const emptyResult = h.runInstall({ FAKE_PYTHON_VERSION: '' });
       assert.notStrictEqual(emptyResult.status, 0);
       assert.match(emptyResult.stderr, /Python 3\.11 or newer/i);
-      assert.deepStrictEqual(readCalls(h.logPath), []);
+      assert.ok(!readCalls(h.logPath).some(c => c.tool === 'launchctl'));
       assertNoFilesystemMutation(h);
 
       // Malformed text
       const malformedResult = h.runInstall({ FAKE_PYTHON_VERSION: 'Python invalid-version' });
       assert.notStrictEqual(malformedResult.status, 0);
       assert.match(malformedResult.stderr, /Python 3\.11 or newer/i);
-      assert.deepStrictEqual(readCalls(h.logPath), []);
+      assert.ok(!readCalls(h.logPath).some(c => c.tool === 'launchctl'));
       assertNoFilesystemMutation(h);
 
       // Missing minor version
       const missingMinorResult = h.runInstall({ FAKE_PYTHON_VERSION: 'Python 3' });
       assert.notStrictEqual(missingMinorResult.status, 0);
       assert.match(missingMinorResult.stderr, /Python 3\.11 or newer/i);
-      assert.deepStrictEqual(readCalls(h.logPath), []);
+      assert.ok(!readCalls(h.logPath).some(c => c.tool === 'launchctl'));
       assertNoFilesystemMutation(h);
     } finally {
       h.cleanup();

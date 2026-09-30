@@ -51,6 +51,10 @@
 
 ## 工作流程
 
+专注运行期间，每累计 20 分钟放大宠物、保持 20 秒，提示远眺约 6 米并轻柔、完整眨眼 10 次。暂停不累计，睡眠或重新连接后不补播错过的提示，专注倒计时继续。此功能是提醒，不强制锁屏，也不承诺预防或治疗干眼的医疗效果。
+
+伴侣程序不申请也不使用「录屏」或「辅助功能」权限。Codex 暴露独立宠物窗口时，计时器按窗口边界跟随；语音模式下则根据宿主窗口几何位置估算宠物在右下方的位置。Codex 调整布局后，估算位置可能偏移。若没有可识别的宠物/宿主窗口，表盘会隐藏，而不会固定在无关的屏幕位置。运行 `codex-pet-companion doctor --json` 查看诊断。
+
 1. 选择 `25/5`、`50/10` 或 `90/20`。
 2. 让紧凑番茄表盘与 Codex 小宠物陪伴专注。
 3. 休息开始时，宠物放大为全屏、低动态的待机状态。
@@ -74,7 +78,9 @@ Huberman Lab 的 *Focus Toolkit* 建议把专注段控制在约 90 分钟以内�
 
 ## 隐私
 
-目标和计时历史仅保存在本机 `~/.codex/ultradian-rhythm`。应用不上传会话数据、不运行遥测，也不会调用 AI 模型。宠物定位可能请求 macOS 名为“屏幕与系统音频录制”的权限：仅当窗口元数据不足以定位宠物时，才会在内存中捕获匹配的 ChatGPT/Codex 窗口像素用于计算宠物位置。应用不采集音频，也不会保存或传输该图像。拒绝权限会关闭这条视觉定位路径，不会把屏幕内容发送到其他地方。
+目标和计时历史仅保存在本机 `~/.codex/ultradian-rhythm`。应用不上传会话数据、不运行遥测，也不会调用 AI 模型。宠物定位只使用可见窗口元数据和几何位置；伴侣程序不会申请「录屏」或「辅助功能」权限，不捕获窗口像素，也不保存截屏。
+
+分享历史前请检查导出文件，目标文字和时间可能暴露工作内容。详见[本地数据与 AI 分析](docs/data-and-ai-analysis.md)。
 
 分享历史前请检查导出文件，目标文字和时间可能暴露工作内容。详见[本地数据与 AI 分析](docs/data-and-ai-analysis.md)。
 
@@ -95,9 +101,10 @@ Huberman Lab 的 *Focus Toolkit* 建议把专注段控制在约 90 分钟以内�
 ## 前置条件
 
 - **macOS**。
-- **Python 3.11 或更高版本**（可用作可执行的 Python）。
-- **Node.js**。安装程序会首先尝试使用 Codex 或 ChatGPT 内置的 Node，如果不可用则退而使用 `PATH` 中的 `node`。
-- **Xcode Command Line Tools**（需提供 `xcrun swiftc` 以编译 Swift 渲染器）。
+- **Node.js 20、22 或 24**，并由 Node.js Foundation 官方签名。
+- **Python 3.11 或更高版本**，来源为 uv、python.org 或 Homebrew。
+- **Xcode Command Line Tools**（需提供 `xcrun swiftc`），只在安装时用于编译本地 Swift 组件。
+- **GitHub CLI (`gh`)**（从 Release 安装时用于验证发布 attestation）。
 - **GitHub CLI (`gh`)**（首次安装前用于验证发布来源证明）。
 
 ---
@@ -166,12 +173,11 @@ Codex 会对需要审批的操作正常请求确认。`v0.1.1` 已发布并带�
 ./scripts/install.sh
 ```
 
-安装程序会将项目复制到当前用户的本地应用数据目录中，在 `~/.local/bin` 下安装 CLI 包装器，并写入以下 LaunchAgents：
+安装程序会将项目和固定版本的 Node/Python 运行时复制到内置盘用户目录 `~/.local/share/codex-ultradian-rhythm`，安装时编译 Swift 组件，在 `~/.local/bin` 下安装 CLI 包装器，并注册一个用户级 LaunchAgent：
 
-- `~/Library/LaunchAgents/io.github.codex-ultradian-rhythm.plist`
 - `~/Library/LaunchAgents/io.github.codex-pet-companion.plist`
 
-在提交新 Payload 之前，会执行 Payload 暂存、编译和激活交换的回滚机制。如果提交后计时器服务启动失败，将尝试恢复显式配置的历史服务；如果陪伴端失败，则会停止陪伴服务，但保留已验证的新计时器和现有状态。
+LaunchAgent 会在 Codex 重启期间持续运行计时服务，并且只在受支持的 Codex/ChatGPT 应用运行时启动宠物界面。表盘跟随宠物移动，宠物隐藏时同步隐藏；计时依据本地持久化截止时间恢复。不会安装 root Helper，也不会修改 Codex/ChatGPT 应用。若 macOS 阻止后台项目，请在**系统设置 → 通用 → 登录项与扩展**中允许；安装器不会改写 macOS 权限数据库。安装会事务式切换托管文件，并在新 supervisor 通过健康检查前，将旧程序与服务配置保留在 `~/.codex/ultradian-rhythm/migration-backups`。
 
 ---
 
@@ -204,6 +210,8 @@ codex-pet-companion preview --pet <id> --state exit
 codex-pet-companion start
 codex-pet-companion stop
 codex-pet-companion status
+codex-pet-companion doctor --json
+codex-pet-companion repair
 codex-pet-companion config set pet auto
 codex-pet-companion config set pet <id>
 ```
@@ -225,7 +233,9 @@ codex-pet-companion config set pet <id>
 
 - **Swift 渲染器编译失败**：请确保已通过 `xcode-select --install` 安装了 Xcode 命令行工具。
 - **找不到 CLI 命令**：请确保已将 `~/.local/bin` 添加到终端环境的 `PATH` 变量中。
-- **LaunchAgents 没有运行**：使用 `launchctl list | grep codex` 检查状态，或查看 `~/Library/Logs/` 下的日志文件。
+- **后台服务没有运行**：执行 `codex-pet-companion doctor --json`。若 macOS 将项目标记为禁止，请前往“系统设置 → 通用 → 登录项与扩展”允许，然后运行 `codex-pet-companion repair`。
+- **宠物界面消失**：计时服务仍会独立运行。查看 `codex-pet-companion doctor --json` 和 `~/.codex/ultradian-rhythm/supervisor.log`；宠物无法识别时会隐藏界面，而不会固定到屏幕其他位置。
+- **运行时或渲染器异常**：运行 `codex-pet-companion repair`。渲染器在安装时编译，日常运行不依赖 Xcode 或保持外接硬盘连接。
 
 ---
 

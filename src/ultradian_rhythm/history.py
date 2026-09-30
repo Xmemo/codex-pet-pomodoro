@@ -3,7 +3,7 @@ import sqlite3
 import json
 import contextlib
 from typing import Optional, List, Dict, Any
-from .storage import STATE_DIR, ensure_private_dir
+from .storage import STATE_DIR, ensure_private_directory, secure_private_file
 
 DB_PATH = os.path.join(STATE_DIR, "sessions.sqlite")
 
@@ -11,39 +11,41 @@ class HistoryManager:
     def __init__(self, db_path: str = DB_PATH) -> None:
         self.db_path = db_path
 
-    def _prepare_db(self) -> None:
+    def _get_conn(self) -> sqlite3.Connection:
         db_dir = os.path.dirname(self.db_path)
         if db_dir:
-            ensure_private_dir(db_dir)
-        fd = os.open(self.db_path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
-        try:
-            os.fchmod(fd, 0o600)
-        finally:
-            os.close(fd)
-
-    def _get_conn(self) -> sqlite3.Connection:
-        self._prepare_db()
+            ensure_private_directory(db_dir, tighten_mode=os.path.abspath(db_dir) == os.path.abspath(STATE_DIR))
+        secure_private_file(self.db_path, create=True)
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys = ON")
+        self._secure_sqlite_modes()
         return conn
+
+    def _secure_sqlite_modes(self) -> None:
+        secure_private_file(self.db_path)
+        secure_private_file(f"{self.db_path}-wal")
+        secure_private_file(f"{self.db_path}-shm")
 
     def _get_read_only_conn(self) -> sqlite3.Connection:
         db_path = os.path.abspath(self.db_path)
+        db_dir = os.path.dirname(db_path)
+        if db_dir:
+            ensure_private_directory(db_dir, tighten_mode=db_dir == os.path.abspath(STATE_DIR))
+        secure_private_file(db_path)
         conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
         conn.row_factory = sqlite3.Row
+        self._secure_sqlite_modes()
         return conn
 
     @contextlib.contextmanager
     def transaction(self):
-        self._prepare_db()
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA foreign_keys = ON")
+        conn = self._get_conn()
         try:
             conn.execute("BEGIN TRANSACTION")
             yield conn
             conn.commit()
+            self._secure_sqlite_modes()
         except Exception:
             conn.rollback()
             raise
@@ -121,6 +123,7 @@ class HistoryManager:
             if version < 2:
                 conn.execute("PRAGMA user_version = 2")
             conn.commit()
+            self._secure_sqlite_modes()
 
     def bootstrap_legacy_session(self, session_id: str, preset: str, intention_text: str, planned_work: int, planned_rest: int, started_at: float) -> None:
         with self.transaction() as conn:

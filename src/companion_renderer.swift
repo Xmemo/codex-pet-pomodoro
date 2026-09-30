@@ -13,9 +13,51 @@ struct AtlasInfo {
     let cellHeight: Int = 208
 }
 
+private let maxAtlasBytes = 64 * 1024 * 1024
+private let maxAtlasRows = 16
+private let maxFrameBytes = 8 * 1024 * 1024
+private let maxFrameDimension = 2048
+private let maxFramePixels = 4 * 1024 * 1024
+private let maxTotalClipPixels = 16 * 1024 * 1024
+private let maxFramesPerClip = 60
+private let maxTotalClipFrames = 120
+private let maxConfigBytes = 1024 * 1024
+
+private func imageDimensions(source: CGImageSource) -> (width: Int, height: Int)? {
+    guard let copiedProperties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) else { return nil }
+    let properties = copiedProperties as NSDictionary
+    guard let width = properties[kCGImagePropertyPixelWidth] as? NSNumber,
+          let height = properties[kCGImagePropertyPixelHeight] as? NSNumber else { return nil }
+    return (width.intValue, height.intValue)
+}
+
+private func fileSize(at url: URL) -> Int? {
+    guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
+          let size = attributes[.size] as? NSNumber else { return nil }
+    return size.intValue
+}
+
+private func loadBoundedFrame(path: URL, accumulatedPixels: Int) -> (image: CGImage, pixels: Int)? {
+    guard let size = fileSize(at: path), size > 0, size <= maxFrameBytes,
+          let source = CGImageSourceCreateWithURL(path as CFURL, nil),
+          let dimensions = imageDimensions(source: source),
+          dimensions.width > 0, dimensions.height > 0,
+          dimensions.width <= maxFrameDimension, dimensions.height <= maxFrameDimension,
+          dimensions.width * dimensions.height <= maxFramePixels,
+          accumulatedPixels + dimensions.width * dimensions.height <= maxTotalClipPixels,
+          let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else { return nil }
+    return (image, dimensions.width * dimensions.height)
+}
+
 func loadAtlas(path: String) -> CGImage? {
     let url = URL(fileURLWithPath: path)
-    guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+    guard let size = fileSize(at: url), size > 0, size <= maxAtlasBytes,
+          let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+          let dimensions = imageDimensions(source: source),
+          dimensions.width == 1536,
+          dimensions.height >= 1872,
+          dimensions.height % 208 == 0,
+          dimensions.height / 208 <= maxAtlasRows,
           let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else {
         return nil
     }
@@ -31,7 +73,8 @@ func extractFrame(atlas: CGImage, atlasInfo: AtlasInfo, row: Int, col: Int) -> C
 func deriveAtlasInfo(width: Int, height: Int) -> AtlasInfo? {
     guard width == 1536,
           height >= 1872,
-          height % 208 == 0 else {
+          height % 208 == 0,
+          height / 208 <= maxAtlasRows else {
         return nil
     }
     return AtlasInfo(width: width, height: height, columns: width / 192, rows: height / 208)
@@ -334,24 +377,6 @@ func resizeImageNearest(image: CGImage, targetWidth: Int, targetHeight: Int) -> 
     return destinationContext.makeImage()
 }
 
-private typealias WindowImageFunction = @convention(c) (CGRect, UInt32, CGWindowID, UInt32) -> Unmanaged<CGImage>?
-
-private let windowImageFunction: WindowImageFunction? = {
-    guard let processHandle = dlopen(nil, RTLD_LAZY),
-          let symbol = dlsym(processHandle, "CGWindowListCreateImage") else {
-        return nil
-    }
-    return unsafeBitCast(symbol, to: WindowImageFunction.self)
-}()
-
-func captureWindowImage(windowID: CGWindowID) -> CGImage? {
-    guard windowID != 0, let capture = windowImageFunction else { return nil }
-    let listOptions = CGWindowListOption.optionIncludingWindow.rawValue
-    let imageOptions = CGWindowImageOption.boundsIgnoreFraming.rawValue |
-        CGWindowImageOption.bestResolution.rawValue
-    return capture(.null, listOptions, windowID, imageOptions)?.takeRetainedValue()
-}
-
 // MARK: - Config
 struct AtlasFrameConfig: Decodable {
     let row: Int
@@ -530,6 +555,9 @@ class CompanionWindow: NSPanel {
     var lastStatusSignature: String? = nil
     var statusEmissionEnabled: Bool = true
     var isMidpoint: Bool = false
+    var reminderHoldSeconds: Double = 2
+    var reminderGeneration = 0
+    var eyeRestTextLayer: CATextLayer?
     var isTakeover: Bool = false
 
     var testTransientAnchor: Bool = false
@@ -546,24 +574,15 @@ class CompanionWindow: NSPanel {
     var testIdleProgression: Bool = false
 
     var trustedPetAnchorFound: Bool = false
+    var visualAnchorDiagnostic: String = "not-checked"
     var mockWindowList: [[String: Any]]? = nil
     var testTrustedPetAnchor: Bool = false
     var testVisualMatch: Bool = false
-    var testVoiceVisualAnchor: Bool = false
+    var testVoiceGeometryAnchor: Bool = false
 
-    var lastVisualAnchorFrame: NSRect?
-    var lastVisualAnchorScreen: NSScreen?
-    var lastVisualAnchorTime: Double = 0
+    var lastVoiceGeometryFrame: NSRect?
     var visualAnchorStaleInterval: Double = 2.5
-    // A main-window fallback may keep the panel alive during a transient
-    // visual-match miss, but must expire when the native pet is hidden.
     var lastTrustedPetAnchorTime: Double = 0
-    var screenCaptureRequestAttempted = false
-    var screenCaptureRequestCount = 0
-
-    // Test-only injections stay in memory and avoid real permission prompts.
-    var mockHostCaptureImage: CGImage?
-    var mockScreenCaptureGranted: Bool?
     var mockMediaTime: Double?
 
     func mediaTime() -> Double {
@@ -571,27 +590,7 @@ class CompanionWindow: NSPanel {
     }
 
     func clearVisualAnchor() {
-        lastVisualAnchorFrame = nil
-        lastVisualAnchorScreen = nil
-        lastVisualAnchorTime = 0
-    }
-
-    func screenCaptureGranted() -> Bool {
-        if let mockGranted = mockScreenCaptureGranted {
-            if mockGranted { return true }
-            if !screenCaptureRequestAttempted {
-                screenCaptureRequestAttempted = true
-                screenCaptureRequestCount += 1
-            }
-            return false
-        }
-
-        guard #available(macOS 10.15, *) else { return true }
-        if CGPreflightScreenCaptureAccess() { return true }
-        guard !screenCaptureRequestAttempted else { return false }
-        screenCaptureRequestAttempted = true
-        screenCaptureRequestCount += 1
-        return CGRequestScreenCaptureAccess()
+        lastVoiceGeometryFrame = nil
     }
 
     override init(contentRect: NSRect, styleMask: NSWindow.StyleMask, backing: NSWindow.BackingStoreType, defer flag: Bool) {
@@ -643,6 +642,17 @@ class CompanionWindow: NSPanel {
         pet.backgroundColor = NSColor.clear.cgColor
         rootLayer.addSublayer(pet)
         self.petLayer = pet
+        let reminder = CATextLayer()
+        reminder.string = "远眺约 6 米，持续 20 秒\n轻柔、完整眨眼 10 次"
+        reminder.fontSize = 22
+        reminder.alignmentMode = .center
+        reminder.foregroundColor = NSColor.white.cgColor
+        reminder.backgroundColor = NSColor.black.withAlphaComponent(0.85).cgColor
+        reminder.cornerRadius = 8
+        reminder.contentsScale = currentTargetScreen().backingScaleFactor
+        reminder.isHidden = true
+        rootLayer.addSublayer(reminder)
+        eyeRestTextLayer = reminder
     }
 
     // Calm idle blink timers
@@ -744,8 +754,10 @@ class CompanionWindow: NSPanel {
     }
 
     func scheduleMidpointHold() {
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
-            guard let self = self, self.isMidpoint, self.engine.currentState == .resting else { return }
+        let generation = reminderGeneration
+        DispatchQueue.main.asyncAfter(deadline: .now() + reminderHoldSeconds) { [weak self] in
+            guard let self = self, self.reminderGeneration == generation,
+                  self.isMidpoint, self.engine.currentState == .resting else { return }
             self.cancelCalmIdleTimers()
             self.engine.currentFrameIndex = 0
             self.updateGeometryAndLayers()
@@ -1051,6 +1063,11 @@ class CompanionWindow: NSPanel {
 
         petLayer?.frame = currentRect
         backdropLayer?.opacity = currentOpacity
+        let visible = screen.visibleFrame
+        eyeRestTextLayer?.frame = CGRect(x: visible.minX - screen.frame.minX + 16,
+            y: visible.minY - screen.frame.minY + 16,
+            width: max(1, visible.width - 32), height: 64)
+        eyeRestTextLayer?.isHidden = !(isMidpoint && reminderHoldSeconds == 20 && engine.currentState == .resting)
 
         engine.targetHeightRatio = targetHeightRatio
         if let num = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID {
@@ -1076,135 +1093,79 @@ class CompanionWindow: NSPanel {
         return NSScreen.main ?? primaryScreen
     }
 
-    func windowID(from window: [String: Any]) -> CGWindowID {
-        let value = window[kCGWindowNumber as String]
-        if let number = value as? NSNumber { return CGWindowID(number.uint32Value) }
-        if let number = value as? UInt32 { return CGWindowID(number) }
-        if let number = value as? Int, number >= 0 { return CGWindowID(number) }
-        return 0
-    }
-
-    func updateVoiceVisualAnchor(windowList: [[String: Any]], primaryHeight: CGFloat) -> Bool {
+    func updateVoiceGeometryAnchor(windowList: [[String: Any]], primaryHeight: CGFloat) -> Bool {
         let maxHostWidth = max(1600, NSScreen.screens.map { $0.frame.width }.max() ?? 1600)
-        guard let host = windowList.first(where: { window in
+        let appLayer3Windows = windowList.filter { window in
             let owner = window[kCGWindowOwnerName as String] as? String ?? ""
-            let name = window[kCGWindowName as String] as? String ?? ""
             let layer = window[kCGWindowLayer as String] as? Int ?? 0
+            return (owner == "ChatGPT" || owner == "Codex") && layer == 3
+        }
+        let geometryEligibleWindows = appLayer3Windows.filter { window in
             guard let bounds = window[kCGWindowBounds as String] as? [String: Any],
                   let width = bounds["Width"] as? CGFloat,
                   let height = bounds["Height"] as? CGFloat else { return false }
-            return (owner == "ChatGPT" || owner == "Codex") &&
-                layer == 3 && name == "ChatGPT" &&
-                width >= 600 && width <= maxHostWidth && height >= 1000
-        }),
-        let bounds = host[kCGWindowBounds as String] as? [String: Any],
-        let hostX = bounds["X"] as? CGFloat,
-        let hostY = bounds["Y"] as? CGFloat,
-        let hostWidth = bounds["Width"] as? CGFloat,
-        let hostHeight = bounds["Height"] as? CGFloat else {
-            clearVisualAnchor()
-            return false
+            return width >= 600 && width <= maxHostWidth && height >= 1000
         }
-
-        guard let atlas,
-              let info = atlasInfo ?? deriveAtlasInfo(width: atlas.width, height: atlas.height) else {
-            clearVisualAnchor()
-            return false
-        }
-
-        guard screenCaptureGranted() else {
-            clearVisualAnchor()
-            return false
-        }
-
-        let profile = resolveTakeoverIdleProfile(petId: petId, atlasInfo: info)
-        let row = profile?.row ?? 0
-        let column = profile?.baseFrame ?? 0
-        guard let idleFrame = extractFrame(atlas: atlas, atlasInfo: info, row: row, col: column) else {
-            clearVisualAnchor()
-            return false
-        }
-
-        let hostImage = mockHostCaptureImage ?? captureWindowImage(windowID: windowID(from: host))
-        guard let hostImage, hostImage.width > 0, hostImage.height > 0 else {
-            clearVisualAnchor()
-            return false
-        }
-
-        let pixelsPerPointX = CGFloat(hostImage.width) / hostWidth
-        let pixelsPerPointY = CGFloat(hostImage.height) / hostHeight
-        guard pixelsPerPointX > 0, pixelsPerPointY > 0 else {
-            clearVisualAnchor()
-            return false
-        }
-
-        let visibleWidth = max(20, smallWidth)
-        let visibleHeight = visibleWidth * CGFloat(idleFrame.height) / CGFloat(idleFrame.width)
-        let templateWidth = max(1, Int(round(visibleWidth * pixelsPerPointX)))
-        let templateHeight = max(1, Int(round(visibleHeight * pixelsPerPointY)))
-        guard let template = resizeImageNearest(
-            image: idleFrame,
-            targetWidth: templateWidth,
-            targetHeight: templateHeight
-        ) else {
-            clearVisualAnchor()
-            return false
-        }
-
-        let now = mediaTime()
-        if let match = matchPetTemplate(hostImage: hostImage, templateImage: template, minConfidence: 0.70) {
-            let pointX = match.rect.origin.x / pixelsPerPointX
-            let pointY = match.rect.origin.y / pixelsPerPointY
-            let pointWidth = match.rect.width / pixelsPerPointX
-            let pointHeight = match.rect.height / pixelsPerPointY
-            let globalX = hostX + pointX
-            let appKitY = primaryHeight - hostY - pointY - pointHeight
-            let target = NSRect(x: globalX, y: appKitY, width: pointWidth, height: pointHeight)
-            let screen = findScreenForCGRect(
-                x: globalX,
-                y: hostY + pointY,
-                w: pointWidth,
-                h: pointHeight
-            )
-
-            if let previous = lastVisualAnchorFrame,
-               now - lastVisualAnchorTime <= visualAnchorStaleInterval {
-                let alpha: CGFloat = 0.7
-                lastAnchorFrame = NSRect(
-                    x: previous.origin.x * (1 - alpha) + target.origin.x * alpha,
-                    y: previous.origin.y * (1 - alpha) + target.origin.y * alpha,
-                    width: previous.width * (1 - alpha) + target.width * alpha,
-                    height: previous.height * (1 - alpha) + target.height * alpha
-                )
+        guard let host = geometryEligibleWindows.first else {
+            if appLayer3Windows.isEmpty {
+                visualAnchorDiagnostic = "voice-window-not-enumerated"
             } else {
-                lastAnchorFrame = target
+                visualAnchorDiagnostic = "voice-window-geometry-filtered"
             }
-
-            lastAnchorScreen = screen
-            lastVisualAnchorFrame = lastAnchorFrame
-            lastVisualAnchorScreen = screen
-            lastVisualAnchorTime = now
-            return true
+            clearVisualAnchor()
+            return false
+        }
+        guard let bounds = host[kCGWindowBounds as String] as? [String: Any],
+              let hostX = bounds["X"] as? CGFloat,
+              let hostY = bounds["Y"] as? CGFloat,
+              let hostWidth = bounds["Width"] as? CGFloat,
+              let hostHeight = bounds["Height"] as? CGFloat,
+              hostWidth >= 600, hostHeight >= 1000 else {
+            visualAnchorDiagnostic = "voice-window-bounds-invalid"
+            clearVisualAnchor()
+            return false
         }
 
-        if let previous = lastVisualAnchorFrame,
-           now - lastVisualAnchorTime <= visualAnchorStaleInterval {
-            lastAnchorFrame = previous
-            lastAnchorScreen = lastVisualAnchorScreen
-            return true
-        }
+        // Codex/ChatGPT does not expose the embedded pet's frame. Estimate its
+        // established lower-right voice-host position from window geometry only.
+        let petWidth = min(max(20, smallWidth), hostWidth * 0.25)
+        let petHeight = petWidth * 208 / 192
+        let offsetX = min(max(0, hostWidth - petWidth), hostWidth * 0.805)
+        let offsetY = min(max(0, hostHeight - petHeight), hostHeight * 0.8)
+        let globalX = hostX + offsetX
+        let globalTopY = hostY + offsetY
+        let appKitY = primaryHeight - globalTopY - petHeight
+        let target = NSRect(x: globalX, y: appKitY, width: petWidth, height: petHeight)
+        let screen = findScreenForCGRect(x: globalX, y: globalTopY, w: petWidth, h: petHeight)
 
-        clearVisualAnchor()
-        return false
+        if let previous = lastVoiceGeometryFrame {
+            let alpha: CGFloat = 0.7
+            lastAnchorFrame = NSRect(
+                x: previous.origin.x * (1 - alpha) + target.origin.x * alpha,
+                y: previous.origin.y * (1 - alpha) + target.origin.y * alpha,
+                width: previous.width * (1 - alpha) + target.width * alpha,
+                height: previous.height * (1 - alpha) + target.height * alpha
+            )
+        } else {
+            lastAnchorFrame = target
+        }
+        lastAnchorScreen = screen
+        lastVoiceGeometryFrame = lastAnchorFrame
+        visualAnchorDiagnostic = "voice-host-geometry-estimate"
+        return true
     }
 
     func alignWithCodexWindow() {
         let previousAnchorFound = engine.anchorFound
         let previousWindowVisible = engine.windowVisible
+        let previousPetAnchorFound = trustedPetAnchorFound
+        let previousAnchorDiagnostic = visualAnchorDiagnostic
+        let previousTimerPanelVisible = timerPanel?.panel.isVisible ?? false
 
         if isPreviewMode {
             engine.anchorFound = true
             trustedPetAnchorFound = true
+            visualAnchorDiagnostic = "preview-anchor"
             syncWindowVisibility()
             if previousAnchorFound != engine.anchorFound || previousWindowVisible != engine.windowVisible {
                 emitStatusIfChanged()
@@ -1215,6 +1176,7 @@ class CompanionWindow: NSPanel {
         if testNoAnchor {
             engine.anchorFound = false
             trustedPetAnchorFound = false
+            visualAnchorDiagnostic = "test-no-anchor"
             syncWindowVisibility()
             if let panel = self.timerPanel {
                 panel.setAnchorFrame(.zero, screen: nil)
@@ -1234,6 +1196,7 @@ class CompanionWindow: NSPanel {
         } else {
             engine.anchorFound = false
             trustedPetAnchorFound = false
+            visualAnchorDiagnostic = "window-list-unavailable"
             syncWindowVisibility()
             if let panel = self.timerPanel {
                 panel.setAnchorFrame(.zero, screen: nil)
@@ -1248,6 +1211,7 @@ class CompanionWindow: NSPanel {
         guard let primaryScreen = NSScreen.screens.first(where: { $0.frame.origin == .zero }) ?? NSScreen.screens.first else {
             engine.anchorFound = false
             trustedPetAnchorFound = false
+            visualAnchorDiagnostic = "display-unavailable"
             syncWindowVisibility()
             if let panel = self.timerPanel {
                 panel.setAnchorFrame(.zero, screen: nil)
@@ -1286,6 +1250,7 @@ class CompanionWindow: NSPanel {
 
                     if isAvatar || isLayer3Pet {
                         trustedFound = true
+                        visualAnchorDiagnostic = "native-pet-window"
                         clearVisualAnchor()
                         lastScreen = findScreenForCGRect(x: x, y: y, w: w, h: h)
                         let appKitY = primaryHeight - y - h
@@ -1298,7 +1263,7 @@ class CompanionWindow: NSPanel {
         }
 
         if !trustedFound && !testNoAnchor && !testAnchorFallback && !testTransientAnchor {
-            trustedFound = updateVoiceVisualAnchor(windowList: windowList, primaryHeight: primaryHeight)
+            trustedFound = updateVoiceGeometryAnchor(windowList: windowList, primaryHeight: primaryHeight)
             if trustedFound { lastScreen = lastAnchorScreen }
         }
         
@@ -1338,9 +1303,15 @@ class CompanionWindow: NSPanel {
         } else if mainFound {
             engine.anchorFound = true
             trustedPetAnchorFound = false
+            if visualAnchorDiagnostic == "not-checked" || visualAnchorDiagnostic == "pet-image-matched" {
+                visualAnchorDiagnostic = "main-window-only"
+            }
         } else {
             engine.anchorFound = false
             trustedPetAnchorFound = false
+            if visualAnchorDiagnostic == "not-checked" {
+                visualAnchorDiagnostic = "codex-window-not-found"
+            }
         }
 
         updateGeometryAndLayers()
@@ -1360,7 +1331,11 @@ class CompanionWindow: NSPanel {
                 panel.hidePanel()
             }
         }
-        if previousAnchorFound != engine.anchorFound || previousWindowVisible != engine.windowVisible {
+        if previousAnchorFound != engine.anchorFound ||
+            previousWindowVisible != engine.windowVisible ||
+            previousPetAnchorFound != trustedPetAnchorFound ||
+            previousAnchorDiagnostic != visualAnchorDiagnostic ||
+            previousTimerPanelVisible != (timerPanel?.panel.isVisible ?? false) {
             emitStatusIfChanged()
         }
     }
@@ -1384,6 +1359,8 @@ class CompanionWindow: NSPanel {
 
         switch evt.event {
         case "companion.activate":
+            reminderGeneration += 1
+            eyeRestTextLayer?.isHidden = true
             if let forceState = evt.rawJson["state"] as? String, forceState == "resting" {
                 isTakeover = true
                 isMidpoint = false
@@ -1440,6 +1417,8 @@ class CompanionWindow: NSPanel {
             emitStatusIfChanged()
 
         case "companion.deactivate":
+            reminderGeneration += 1
+            eyeRestTextLayer?.isHidden = true
             if let forceState = evt.rawJson["state"] as? String, forceState == "resting" {
                 isTakeover = true
                 isMidpoint = false
@@ -1483,7 +1462,10 @@ class CompanionWindow: NSPanel {
             emitStatusIfChanged()
 
         case "companion.midpoint":
+            if evt.reason == "eye-rest" && !trustedPetAnchorFound && !isPreviewMode { return }
             if engine.currentState == .small {
+                reminderGeneration += 1
+                reminderHoldSeconds = evt.reason == "eye-rest" ? 20 : 2
                 isTakeover = true
                 isMidpoint = true
                 engine.currentState = .entering
@@ -1580,6 +1562,10 @@ class CompanionWindow: NSPanel {
             "currentFrame": engine.currentFrameIndex,
             "fps": engine.animationFps,
             "anchorFound": engine.anchorFound,
+            "petAnchorFound": trustedPetAnchorFound,
+            "mainWindowFallbackAnchor": engine.anchorFound && !trustedPetAnchorFound,
+            "visualAnchorDiagnostic": visualAnchorDiagnostic,
+            "timerPanelVisible": timerPanel?.panel.isVisible ?? false,
             "windowVisible": engine.windowVisible,
             "error": engine.error as Any? ?? NSNull(),
             "targetHeightRatio": engine.targetHeightRatio,
@@ -1596,6 +1582,10 @@ class CompanionWindow: NSPanel {
             activeClip,
             String(describing: dict["fps"]!),
             String(describing: dict["anchorFound"]!),
+            String(describing: dict["petAnchorFound"]!),
+            String(describing: dict["mainWindowFallbackAnchor"]!),
+            String(describing: dict["visualAnchorDiagnostic"]!),
+            String(describing: dict["timerPanelVisible"]!),
             String(describing: dict["windowVisible"]!),
             error,
         ].joined(separator: "|")
@@ -1630,7 +1620,7 @@ class RendererDelegate: NSObject, NSApplicationDelegate {
             window.testPanelGeometry || window.testPanelFocus || window.testPanelFlash ||
             window.testMidpoint || window.testActivateTakeover || window.testTakeoverAtlasPreference ||
             window.testTrustedPetAnchor || window.testIdleProgression || window.testVisualMatch ||
-            window.testVoiceVisualAnchor
+            window.testVoiceGeometryAnchor
         ) {
             window.statusEmissionEnabled = false
         }
@@ -1664,7 +1654,7 @@ class RendererDelegate: NSObject, NSApplicationDelegate {
         if window.testTrustedPetAnchor { runTrustedPetAnchorTest(); return }
         if window.testIdleProgression { runIdleProgressionTest(); return }
         if window.testVisualMatch { runVisualMatchTest(); return }
-        if window.testVoiceVisualAnchor { runVoiceVisualAnchorTest(); return }
+        if window.testVoiceGeometryAnchor { runVoiceGeometryAnchorTest(); return }
 
         if !window.isPreviewMode {
             Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
@@ -1755,35 +1745,36 @@ class RendererDelegate: NSObject, NSApplicationDelegate {
             print("{\"valid\": false, \"error\": \"Unsupported file extension. Only .png and .webp are allowed\"}")
             exit(0)
         }
-        let url = URL(fileURLWithPath: path) as CFURL
-        guard let source = CGImageSourceCreateWithURL(url, nil),
-              let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else {
-            print("{\"valid\": false, \"error\": \"Could not decode image at path \\\"\(path)\\\"\"}")
+        let url = URL(fileURLWithPath: path)
+        guard let size = fileSize(at: url), size > 0, size <= maxAtlasBytes else {
+            print("{\"valid\": false, \"error\": \"Atlas file size is outside the supported limit\"}")
             exit(0)
         }
-        let w = image.width
-        let h = image.height
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+              let dimensions = imageDimensions(source: source) else {
+            print("{\"valid\": false, \"error\": \"Could not read image dimensions\"}")
+            exit(0)
+        }
+        let w = dimensions.width
+        let h = dimensions.height
+        guard w == 1536 else {
+            print("{\"valid\": false, \"error\": \"Atlas width must be exactly 1536\"}")
+            exit(0)
+        }
+        guard h >= 1872, h % 208 == 0, h / 208 <= maxAtlasRows else {
+            print("{\"valid\": false, \"error\": \"Atlas height must contain 9 through 16 rows of 208 pixels\"}")
+            exit(0)
+        }
+        guard let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else {
+            print("{\"valid\": false, \"error\": \"Could not decode bounded atlas image\"}")
+            exit(0)
+        }
         let alphaInfo = image.alphaInfo
         let hasAlpha = alphaInfo == .premultipliedFirst || alphaInfo == .premultipliedLast ||
                        alphaInfo == .first || alphaInfo == .last || alphaInfo == .alphaOnly
-                       
+
         if !hasAlpha {
             print("{\"valid\": false, \"error\": \"Image does not have an alpha channel\"}")
-            exit(0)
-        }
-        
-        guard w == 1536 else {
-            print("{\"valid\": false, \"error\": \"Atlas width must be exactly 1536, got \(w)\"}")
-            exit(0)
-        }
-        
-        guard h >= 1872 else {
-            print("{\"valid\": false, \"error\": \"Atlas height must be >= 1872, got \(h)\"}")
-            exit(0)
-        }
-        
-        guard h % 208 == 0 else {
-            print("{\"valid\": false, \"error\": \"Atlas height must be divisible by 208, got \(h)\"}")
             exit(0)
         }
         
@@ -1798,18 +1789,31 @@ class RendererDelegate: NSObject, NSApplicationDelegate {
             print("{\"valid\": false, \"error\": \"Unsupported file extension. Only .png and .webp are allowed\"}")
             exit(0)
         }
-        let url = URL(fileURLWithPath: path) as CFURL
-        guard let source = CGImageSourceCreateWithURL(url, nil),
-              let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else {
-            print("{\"valid\": false, \"error\": \"Could not decode image at path \\\"\(path)\\\"\"}")
+        let url = URL(fileURLWithPath: path)
+        guard let size = fileSize(at: url), size > 0, size <= maxFrameBytes else {
+            print("{\"valid\": false, \"error\": \"Frame file size is outside the supported limit\"}")
             exit(0)
         }
-        let w = image.width
-        let h = image.height
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+              let dimensions = imageDimensions(source: source) else {
+            print("{\"valid\": false, \"error\": \"Could not read frame dimensions\"}")
+            exit(0)
+        }
+        let w = dimensions.width
+        let h = dimensions.height
+        guard w > 0, h > 0, w <= maxFrameDimension, h <= maxFrameDimension,
+              w * h <= maxFramePixels else {
+            print("{\"valid\": false, \"error\": \"Frame dimensions exceed the supported pixel limit\"}")
+            exit(0)
+        }
+        guard let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else {
+            print("{\"valid\": false, \"error\": \"Could not decode bounded frame image\"}")
+            exit(0)
+        }
         let alphaInfo = image.alphaInfo
         let hasAlpha = alphaInfo == .premultipliedFirst || alphaInfo == .premultipliedLast ||
                        alphaInfo == .first || alphaInfo == .last || alphaInfo == .alphaOnly
-                       
+
         if !hasAlpha {
             print("{\"valid\": false, \"error\": \"Frame image does not have an alpha channel\"}")
             exit(0)
@@ -2039,6 +2043,7 @@ class RendererDelegate: NSObject, NSApplicationDelegate {
 
     func runStatusSequenceTest() {
         window.engine.anchorFound = true
+        window.visualAnchorDiagnostic = "main-window-only"
         window.engine.windowVisible = false
         window.lastAnchorFrame = NSRect(x: 100, y: 100, width: 84, height: 208)
         window.emitStatusIfChanged()
@@ -2514,6 +2519,21 @@ class RendererDelegate: NSObject, NSApplicationDelegate {
         results["afterCancelIsLooping"] = window.engine.isLooping
         results["cancelValid"] = !window.isMidpoint && window.engine.currentState == .resting && window.engine.isLooping
 
+        window.engine.currentState = .small
+        window.trustedPetAnchorFound = true
+        let eyeEvent = VisualEvent(schemaVersion: 1, event: "companion.midpoint", eventId: "eye-test",
+            reason: "eye-rest", deadline: nil, rawJson: [:])
+        window.processEvent(eyeEvent)
+        window.engine.transitionStartTime = -1
+        window.updateTransitions()
+        results["eyeRestValid"] = window.reminderHoldSeconds == 20 && window.isMidpoint &&
+            window.engine.currentState == .resting && window.eyeRestTextLayer?.isHidden == false
+        let restEvent = VisualEvent(schemaVersion: 1, event: "companion.activate", eventId: "rest-eye-test",
+            reason: nil, deadline: nil, rawJson: [:])
+        window.processEvent(restEvent)
+        window.updateGeometryAndLayers()
+        results["restOverridesEyeReminder"] = !window.isMidpoint && window.eyeRestTextLayer?.isHidden == true
+
         if let data = try? JSONSerialization.data(withJSONObject: results, options: []),
            let str = String(data: data, encoding: .utf8) {
             print(str)
@@ -2647,7 +2667,7 @@ class RendererDelegate: NSObject, NSApplicationDelegate {
                              (window.timerPanel?.panel.isVisible == true) &&
                              window.lastAnchorFrame == NSRect(x: 100, y: primaryHeight - 100 - 400, width: 408, height: 400)
 
-        // 2. A tall voice host is not itself a pet anchor.
+        // 2. A supported tall voice host may provide a geometry-only estimate.
         let voicePetHostWin: [String: Any] = [
             kCGWindowOwnerName as String: "ChatGPT",
             kCGWindowName as String: "ChatGPT",
@@ -2662,10 +2682,10 @@ class RendererDelegate: NSObject, NSApplicationDelegate {
         window.mockWindowList = [voicePetHostWin]
         window.alignWithCodexWindow()
 
-        let voicePetHostCase = !window.engine.anchorFound &&
-                               !window.trustedPetAnchorFound &&
-                               (window.timerPanel?.isAnchorFound == false) &&
-                               (window.timerPanel?.panel.isVisible == false)
+        let voicePetHostCase = window.engine.anchorFound &&
+                               window.trustedPetAnchorFound &&
+                               window.visualAnchorDiagnostic == "voice-host-geometry-estimate" &&
+                               (window.timerPanel?.panel.isVisible == true)
 
         // 3. Main window alone may anchor fullscreen but never makes timer panel visible
         let mainWindowWin: [String: Any] = [
@@ -3007,145 +3027,62 @@ class RendererDelegate: NSObject, NSApplicationDelegate {
         exit(0)
     }
 
-    func runVoiceVisualAnchorTest() {
+    func runVoiceGeometryAnchorTest() {
         window.statusEmissionEnabled = false
         guard let primaryScreen = NSScreen.screens.first(where: { $0.frame.origin == .zero }) ?? NSScreen.screens.first else {
             exit(1)
         }
-
-        let cellWidth = 192
-        let cellHeight = 208
-        let visibleWidth = 84
-        let visibleHeight = Int(round(Double(visibleWidth * cellHeight) / Double(cellWidth)))
-        let petX = 620
-        let petY = 800
-
-        let pattern: (Int, Int) -> (UInt8, UInt8, UInt8, UInt8)? = { x, y in
-            if x >= 24 && x < 168 && y >= 18 && y < 186 {
-                if x >= 38 && x < 82 && y >= 54 && y < 92 { return (25, 35, 65, 255) }
-                if x >= 108 && x < 154 && y >= 112 && y < 156 { return (210, 70, 80, 255) }
-                return (230, 165, 70, 255)
-            }
-            return nil
-        }
-
-        guard let atlas = createSyntheticRGBAImage(
-            width: 1536,
-            height: 1872,
-            fillColor: (r: 0, g: 0, b: 0, a: 0),
-            pattern: { x, y in
-                guard x < cellWidth && y < cellHeight else { return nil }
-                return pattern(x, y)
-            }
-        ), let hostImage = createSyntheticRGBAImage(
-            width: 770,
-            height: 1000,
-            fillColor: (r: 18, g: 20, b: 24, a: 255),
-            pattern: { x, y in
-                guard x >= petX, x < petX + visibleWidth,
-                      y >= petY, y < petY + visibleHeight else { return nil }
-                let sourceX = (x - petX) * cellWidth / visibleWidth
-                let sourceY = (y - petY) * cellHeight / visibleHeight
-                return pattern(sourceX, sourceY)
-            }
-        ), let blankHost = createSyntheticRGBAImage(
-            width: 770,
-            height: 1000,
-            fillColor: (r: 18, g: 20, b: 24, a: 255)
-        ), let wideHostImage = createSyntheticRGBAImage(
-            width: 1128,
-            height: 2069,
-            fillColor: (r: 18, g: 20, b: 24, a: 255),
-            pattern: { x, y in
-                let widePetX = 600
-                let widePetY = 1000
-                guard x >= widePetX, x < widePetX + visibleWidth,
-                      y >= widePetY, y < widePetY + visibleHeight else { return nil }
-                let sourceX = (x - widePetX) * cellWidth / visibleWidth
-                let sourceY = (y - widePetY) * cellHeight / visibleHeight
-                return pattern(sourceX, sourceY)
-            }
-        ) else {
-            exit(1)
-        }
-
+        let visibleWidth: CGFloat = 84
+        let visibleHeight = visibleWidth * 208 / 192
         let voiceHost: [String: Any] = [
             kCGWindowOwnerName as String: "ChatGPT",
-            kCGWindowName as String: "ChatGPT",
+            kCGWindowName as String: "Voice Overlay",
             kCGWindowLayer as String: 3,
-            kCGWindowNumber as String: 101,
             kCGWindowBounds as String: [
-                "X": CGFloat(1000),
-                "Y": CGFloat(-20),
-                "Width": CGFloat(770),
-                "Height": CGFloat(1000)
+                "X": CGFloat(1000), "Y": CGFloat(-20),
+                "Width": CGFloat(770), "Height": CGFloat(1000)
             ]
         ]
-
-        window.atlas = atlas
-        window.atlasInfo = deriveAtlasInfo(width: atlas.width, height: atlas.height)
-        window.petId = ""
-        window.smallWidth = CGFloat(visibleWidth)
+        window.smallWidth = visibleWidth
         window.mockWindowList = [voiceHost]
-        window.mockHostCaptureImage = hostImage
-        window.mockScreenCaptureGranted = true
-        window.mockMediaTime = 100
         window.alignWithCodexWindow()
 
-        let expectedY = primaryScreen.frame.height - CGFloat(-20 + petY + visibleHeight)
-        let positive = window.trustedPetAnchorFound &&
-            abs(window.lastAnchorFrame.minX - CGFloat(1000 + petX)) < 1 &&
+        let expectedY = primaryScreen.frame.height - CGFloat(-20 + 800) - visibleHeight
+        let geometryEstimated = window.trustedPetAnchorFound &&
+            abs(window.lastAnchorFrame.minX - 1620) < 1 &&
             abs(window.lastAnchorFrame.minY - expectedY) < 1 &&
-            abs(window.lastAnchorFrame.width - CGFloat(visibleWidth)) < 1 &&
-            abs(window.lastAnchorFrame.height - CGFloat(visibleHeight)) < 1
-
-        window.mockHostCaptureImage = blankHost
-        window.mockMediaTime = 101
-        window.alignWithCodexWindow()
-        let retainedBriefly = window.trustedPetAnchorFound
-
-        window.mockMediaTime = 104
-        window.alignWithCodexWindow()
-        let hiddenWhenStale = !window.trustedPetAnchorFound && (window.timerPanel?.panel.isVisible == false)
-
-        window.mockHostCaptureImage = hostImage
-        window.mockScreenCaptureGranted = false
-        window.screenCaptureRequestAttempted = false
-        window.screenCaptureRequestCount = 0
-        window.alignWithCodexWindow()
-        window.alignWithCodexWindow()
-        let permissionBounded = window.screenCaptureRequestCount == 1 &&
-            !window.trustedPetAnchorFound && (window.timerPanel?.panel.isVisible == false)
+            abs(window.lastAnchorFrame.width - visibleWidth) < 1 &&
+            abs(window.lastAnchorFrame.height - visibleHeight) < 1 &&
+            window.visualAnchorDiagnostic == "voice-host-geometry-estimate"
+        let panelVisible = window.timerPanel?.panel.isVisible == true
 
         let wideVoiceHost: [String: Any] = [
             kCGWindowOwnerName as String: "ChatGPT",
-            kCGWindowName as String: "ChatGPT",
+            kCGWindowName as String: "Voice Overlay",
             kCGWindowLayer as String: 3,
-            kCGWindowNumber as String: 102,
             kCGWindowBounds as String: [
-                "X": CGFloat(1000),
-                "Y": CGFloat(-20),
-                "Width": CGFloat(1128),
-                "Height": CGFloat(2069)
+                "X": CGFloat(1000), "Y": CGFloat(-20),
+                "Width": CGFloat(1128), "Height": CGFloat(2069)
             ]
         ]
         window.mockWindowList = [wideVoiceHost]
-        window.mockHostCaptureImage = wideHostImage
-        window.mockScreenCaptureGranted = true
-        window.mockMediaTime = 105
         window.alignWithCodexWindow()
+        let expectedWideX = 1620 * 0.3 + (1000 + 1128 * 0.805) * 0.7
         let wideHostRestored = window.trustedPetAnchorFound &&
-            window.timerPanel?.isAnchorFound == true &&
             window.timerPanel?.panel.isVisible == true &&
-            abs(window.lastAnchorFrame.minX - 1600) < 1
+            abs(window.lastAnchorFrame.minX - expectedWideX) < 1
+
+        window.mockWindowList = []
+        window.alignWithCodexWindow()
+        let hiddenWhenHostMissing = !window.trustedPetAnchorFound &&
+            window.timerPanel?.panel.isVisible == false
 
         let result: [String: Any] = [
-            "valid": positive && retainedBriefly && hiddenWhenStale && permissionBounded && wideHostRestored,
-            "positive": positive,
-            "retainedBriefly": retainedBriefly,
-            "hiddenWhenStale": hiddenWhenStale,
-            "permissionBounded": permissionBounded,
+            "valid": geometryEstimated && panelVisible && wideHostRestored && hiddenWhenHostMissing,
+            "geometryEstimated": geometryEstimated,
+            "panelVisible": panelVisible,
             "wideHostRestored": wideHostRestored,
+            "hiddenWhenHostMissing": hiddenWhenHostMissing,
             "anchorWidth": window.lastAnchorFrame.width,
             "expectedWidth": visibleWidth
         ]
@@ -3181,7 +3118,9 @@ struct RendererApp {
                 if i < args.count {
                     let configPath = args[i]
                     let url = URL(fileURLWithPath: configPath)
-                    if let data = try? Data(contentsOf: url),
+                    let configSize = fileSize(at: url) ?? (maxConfigBytes + 1)
+                    if configSize > 0, configSize <= maxConfigBytes,
+                       let data = try? Data(contentsOf: url),
                        let config = try? JSONDecoder().decode(CompanionConfig.self, from: data) {
                         if let petId = config.petId {
                             win.petId = petId
@@ -3194,47 +3133,56 @@ struct RendererApp {
                         if let ratio = config.targetHeightRatio { win.targetHeightRatio = CGFloat(ratio) }
                         if let mode = config.sizingMode { win.sizingMode = mode }
                         if let interp = config.interpolation { win.interpolation = interp }
-                        if let rows = config.atlasRows { win.atlasRows = rows }
+                        if let rows = config.atlasRows, rows >= 9, rows <= maxAtlasRows { win.atlasRows = rows }
 
                         if let clips = config.clips {
-                            for (name, clip) in clips {
-                                if let fps = clip.fps { win.clipFps[name] = fps }
-                                if let loop = clip.loop { win.clipLoop[name] = loop }
+                            let totalReferences = clips.values.reduce(0) { total, clip in
+                                total + (clip.frames?.count ?? clip.atlasFrames?.count ?? 0)
+                            }
+                            if totalReferences <= maxTotalClipFrames {
+                                var decodedFrames: [String: CGImage] = [:]
+                                var decodedPixels = 0
+                                var rejectedClips = Set<String>()
+                                let configDir = (configPath as NSString).deletingLastPathComponent
 
-                                if clip.fallback != true {
-                                    if let frames = clip.frames, !frames.isEmpty {
+                                for (name, clip) in clips {
+                                    if let fps = clip.fps, fps >= 1, fps <= 12 { win.clipFps[name] = fps }
+                                    if let loop = clip.loop { win.clipLoop[name] = loop }
+                                    guard clip.fallback != true else { continue }
+
+                                    if let frames = clip.frames, !frames.isEmpty,
+                                       frames.count <= maxFramesPerClip {
                                         var images: [CGImage] = []
                                         for framePath in frames {
-                                            let frameURL: URL
-                                            if framePath.hasPrefix("/") {
-                                                frameURL = URL(fileURLWithPath: framePath)
+                                            let frameURL = URL(fileURLWithPath: framePath.hasPrefix("/")
+                                                ? framePath
+                                                : configDir + "/" + framePath).standardizedFileURL
+                                            if let cached = decodedFrames[frameURL.path] {
+                                                images.append(cached)
+                                            } else if let loaded = loadBoundedFrame(path: frameURL, accumulatedPixels: decodedPixels) {
+                                                decodedPixels += loaded.pixels
+                                                decodedFrames[frameURL.path] = loaded.image
+                                                images.append(loaded.image)
                                             } else {
-                                                let configDir = (configPath as NSString).deletingLastPathComponent
-                                                frameURL = URL(fileURLWithPath: configDir + "/" + framePath)
-                                            }
-                                            if let source = CGImageSourceCreateWithURL(frameURL as CFURL, nil),
-                                               let cgImage = CGImageSourceCreateImageAtIndex(source, 0, nil) {
-                                                images.append(cgImage)
-                                            } else {
-                                                images.removeAll()
+                                                rejectedClips.insert(name)
                                                 break
                                             }
                                         }
-                                        if !images.isEmpty {
+                                        if images.count == frames.count {
                                             win.clipFrames[name] = images
                                             win.clipAtlasFrames[name] = []
-                                        } else {
-                                            win.clipFrames[name] = []
-                                            win.clipAtlasFrames[name] = []
                                         }
-                                    } else if let aFrames = clip.atlasFrames, !aFrames.isEmpty {
-                                        win.clipAtlasFrames[name] = aFrames
+                                    } else if let atlasFrames = clip.atlasFrames, !atlasFrames.isEmpty,
+                                              atlasFrames.count <= maxFramesPerClip,
+                                              atlasFrames.allSatisfy({ $0.row >= 0 && $0.row < win.atlasRows && $0.column >= 0 && $0.column < 8 }) {
+                                        win.clipAtlasFrames[name] = atlasFrames
                                         win.clipFrames[name] = []
                                     } else {
-                                        win.clipFrames[name] = []
-                                        win.clipAtlasFrames[name] = []
+                                        rejectedClips.insert(name)
                                     }
-                                } else {
+                                }
+
+                                for name in rejectedClips {
                                     win.clipFrames[name] = []
                                     win.clipAtlasFrames[name] = []
                                 }
@@ -3302,8 +3250,8 @@ struct RendererApp {
                 win.testIdleProgression = true
             case "--test-visual-match":
                 win.testVisualMatch = true
-            case "--test-voice-visual-anchor":
-                win.testVoiceVisualAnchor = true
+            case "--test-voice-geometry-anchor":
+                win.testVoiceGeometryAnchor = true
             case "--preview-state":
                 i += 1
                 if i < args.count {

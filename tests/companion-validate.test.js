@@ -220,6 +220,40 @@ test('T034: companion.json schema validation', async (t) => {
       clips: { rest: { atlasFrames: [{ row: -1, column: 2 }], fps: 2 } },
     }, 'x', '/tmp');
     assert.strictEqual(rRow.valid, false);
+
+    const rTooHigh = validateCompanionConfig({
+      schemaVersion: 2,
+      petId: 'x',
+      clips: { rest: { atlasFrames: [{ row: 16, column: 2 }], fps: 2 } },
+    }, 'x', '/tmp');
+    assert.strictEqual(rTooHigh.valid, false);
+    assert.ok(rTooHigh.errors.some(e => e.includes('row')));
+  });
+
+  await t.test('custom clips have bounded per-clip and total frame counts', () => {
+    const tooManyInOne = validateCompanionConfig({
+      schemaVersion: 2,
+      petId: 'x',
+      clips: { rest: { frames: Array(61).fill('f.png'), fps: 2 } },
+    }, 'x', '/tmp');
+    assert.ok(tooManyInOne.errors.some(e => e.includes('exceeds 60 frames')));
+
+    const overTotal = validateCompanionConfig({
+      schemaVersion: 2,
+      petId: 'x',
+      clips: {
+        enter: { atlasFrames: Array(60).fill({ row: 0, column: 0 }), fps: 2 },
+        rest: { atlasFrames: Array(60).fill({ row: 0, column: 0 }), fps: 2 },
+        exit: { atlasFrames: [{ row: 0, column: 0 }], fps: 2 },
+      },
+    }, 'x', '/tmp');
+    assert.ok(overTotal.errors.some(e => e.includes('120 total clip frames')));
+  });
+
+  await t.test('custom atlas row count is bounded', () => {
+    const { validateAtlasDimensions } = require('../src/companion/manifest-loader.js');
+    assert.strictEqual(validateAtlasDimensions(1536, 16 * 208).valid, true);
+    assert.strictEqual(validateAtlasDimensions(1536, 17 * 208).valid, false);
   });
 });
 
@@ -231,6 +265,23 @@ test('T035: Frame image validation', async (t) => {
     const result = validateFrameImage('test.gif', '/tmp', '/dev/null', () => ({ valid: true }));
     assert.strictEqual(result.valid, false);
     assert.ok(result.error.includes('.gif'));
+  });
+
+  await t.test('validateFrameImage rejects oversized encoded files before decoding', () => {
+    const { MAX_FRAME_BYTES } = require('../src/companion/companion-config-loader.js');
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'frame-size-'));
+    const framePath = path.join(tempDir, 'oversized.png');
+    const fd = fs.openSync(framePath, 'w');
+    fs.ftruncateSync(fd, MAX_FRAME_BYTES + 1);
+    fs.closeSync(fd);
+    let validatorCalled = false;
+    const result = validateFrameImage('oversized.png', tempDir, '/dev/null', () => {
+      validatorCalled = true;
+      return { valid: true, width: 1, height: 1, hasAlpha: true };
+    });
+    assert.strictEqual(result.valid, false);
+    assert.strictEqual(validatorCalled, false);
+    fs.rmSync(tempDir, { recursive: true, force: true });
   });
 
   await t.test('validateFrameImage rejects path traversal', () => {
@@ -525,31 +576,29 @@ test('Batch C: Sizing policy, v2-only fields, and handleValidatePet atlasFrames 
       spritesheetPath: 'spritesheet.png'
     }));
     writeTestPNG(path.join(petDir, 'spritesheet.png'), 1536, 1872, true);
+    const userConfigPath = path.join(tempDir, 'companion-config.json');
 
     const mockDeps = (userConfigObj = null) => ({
-      fs: {
-        ...fs,
-        readFileSync: (p, enc) => {
-          if (userConfigObj && p === '/config/companion-config.json') {
-            return JSON.stringify(userConfigObj);
-          }
-          return fs.readFileSync(p, enc);
-        },
-        existsSync: (p) => {
-          if (p === '/config/companion-config.json') return !!userConfigObj;
-          return fs.existsSync(p);
-        }
-      },
+      fs,
       paths: {
         COMPANION_BINARY: '/dev/null',
-        COMPANION_CONFIG_PATH: '/config/companion-config.json',
+        COMPANION_CONFIG_PATH: userConfigPath,
       },
       compileSwiftRenderer: () => {},
       execFileSync: () => JSON.stringify({ valid: true, hasAlpha: true, width: 1536, height: 1872 }),
     });
 
+    const prepareWithUserConfig = (userConfigObj = null) => {
+      if (userConfigObj === null) {
+        fs.rmSync(userConfigPath, { force: true });
+      } else {
+        fs.writeFileSync(userConfigPath, JSON.stringify(userConfigObj));
+      }
+      return defaultPrepareVisualConfig(mockDeps(), { petDir });
+    };
+
     // 1. Missing companion.json -> restHeightRatio at 0.72
-    const resMissing = defaultPrepareVisualConfig(mockDeps(), { petDir });
+    const resMissing = prepareWithUserConfig();
     assert.strictEqual(resMissing.failMsg, undefined);
     assert.strictEqual(resMissing.visualConfig.sizingMode, 'restHeightRatio');
     assert.strictEqual(resMissing.visualConfig.targetHeightRatio, 0.72);
@@ -561,12 +610,12 @@ test('Batch C: Sizing policy, v2-only fields, and handleValidatePet atlasFrames 
       render: { smallWidth: 84, restWidth: 360 },
       clips: {},
     }));
-    const resV1 = defaultPrepareVisualConfig(mockDeps(), { petDir });
+    const resV1 = prepareWithUserConfig();
     assert.strictEqual(resV1.failMsg, undefined);
     assert.strictEqual(resV1.visualConfig.sizingMode, 'fixedWidth');
 
     // 3. Schema v1 companion.json WITH explicit user restHeightRatio override -> forces restHeightRatio mode
-    const resV1UserOverride = defaultPrepareVisualConfig(mockDeps({ render: { restHeightRatio: 0.8 } }), { petDir });
+    const resV1UserOverride = prepareWithUserConfig({ render: { restHeightRatio: 0.8 } });
     assert.strictEqual(resV1UserOverride.failMsg, undefined);
     assert.strictEqual(resV1UserOverride.visualConfig.sizingMode, 'restHeightRatio');
     assert.strictEqual(resV1UserOverride.visualConfig.targetHeightRatio, 0.8);
@@ -578,7 +627,7 @@ test('Batch C: Sizing policy, v2-only fields, and handleValidatePet atlasFrames 
       render: { restHeightRatio: 0.65 },
       clips: {},
     }));
-    const resV2 = defaultPrepareVisualConfig(mockDeps(), { petDir });
+    const resV2 = prepareWithUserConfig();
     assert.strictEqual(resV2.failMsg, undefined);
     assert.strictEqual(resV2.visualConfig.sizingMode, 'restHeightRatio');
     assert.strictEqual(resV2.visualConfig.targetHeightRatio, 0.65);

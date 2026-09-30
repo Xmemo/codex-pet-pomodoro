@@ -3,6 +3,7 @@ const path = require('path');
 const net = require('net');
 const crypto = require('crypto');
 const { sendDaemonCommand } = require('../parser.js');
+const { nextEyeRest, eyeRestDue } = require('./eye-rest.js');
 
 function createUltradianAdapter(options = {}) {
   const {
@@ -18,6 +19,31 @@ function createUltradianAdapter(options = {}) {
   let isShutdown = false;
   let eventSequence = 0;
   let lastMidpointNotified = null;
+  let eyeRestTimer = null;
+  let scheduledEyeRestKey = null;
+  let latestState = null;
+  const nowSeconds = options.nowSeconds || (() => Date.now() / 1000);
+
+  function scheduleEyeRest(state) {
+    const key = `${state.cycle_id}:${state.status}:${state.phase}:${state.deadline}`;
+    if (eyeRestTimer && key === scheduledEyeRestKey) return;
+    clearTimeout(eyeRestTimer);
+    eyeRestTimer = null;
+    const candidate = nextEyeRest(state, nowSeconds());
+    if (!candidate || isShutdown) return;
+    scheduledEyeRestKey = key;
+    eyeRestTimer = setTimeout(async () => {
+      eyeRestTimer = null;
+      latestState = null;
+      await queryAndEmit();
+      if (!isShutdown && eyeRestDue(candidate, latestState, nowSeconds())) {
+        onEvent({ schemaVersion: 1, event: 'companion.midpoint',
+          eventId: nextEventId(), reason: 'eye-rest',
+          deadline: latestState.deadline });
+      }
+    }, Math.max(1, Math.ceil((candidate.at - nowSeconds()) * 1000)));
+    eyeRestTimer.unref?.();
+  }
 
   const nextEventId = options.eventIdFactory || (() => {
     eventSequence += 1;
@@ -71,6 +97,8 @@ function createUltradianAdapter(options = {}) {
     try {
       const response = await sendDaemonCommand(options.socketPath || path.join(stateDir, 'daemon.sock'), { command: 'status' });
       if (!response || !response.state) return;
+      latestState = response.state;
+      scheduleEyeRest(response.state);
 
       const stateKey = semanticStateKey(response.state);
       if (stateKey !== lastSemanticStateKey) {
@@ -141,6 +169,8 @@ function createUltradianAdapter(options = {}) {
 
   function stop() {
     isShutdown = true;
+    clearTimeout(eyeRestTimer);
+    eyeRestTimer = null;
     if (fsWatcher) {
       try { fsWatcher.close(); } catch (_) {}
       fsWatcher = null;
