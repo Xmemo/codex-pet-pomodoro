@@ -9,22 +9,6 @@
 
 A research-informed Pomodoro timer for macOS, inspired by Huberman Lab's discussion of ultradian rhythms. It lives beside your Codex pet during focus and turns that same pet into a prominent, calm break cue when it is time to pause.
 
-## Built-In 20-20-10 Eye-Care Reminder
-
-> [!IMPORTANT]
-> **Every 20 minutes of active timer focus, the pet enlarges for 20 seconds.** The cue asks you to look about 6 metres (20 feet) away and make 10 slow, gentle, complete blinks. Paused time does not count; the focus timer keeps running and the reminder does not block input.
-
-The 25/50/90-minute focus choices produce one, two, or four cues respectively. This is a **screen-break and dry-eye-awareness prompt**, not a clinically proven dry-eye prevention or treatment. It only tracks time in an active Pet Pomodoro session; it does not monitor screen use or verify that you looked away or blinked. The reminder is built into the focus flow and currently has no user-facing on/off or timing setting.
-
-### What the Eye-Care Research Says
-
-- Focused digital tasks can be associated with fewer and less-complete blinks. The TFOS Lifestyle report says improving blinking and taking regular breaks may help, but interventions are not yet well established; its 2023 evidence synthesis rated blink-reminder evidence very low certainty. A later randomized study of 40 young adults with diagnosed dry eye reported symptom and some blink/tear-measure improvements after 30 days of intensive app-guided training (a prompt every 5 seconds, used at least 4 hours a day, 5 days a week). That is encouraging evidence for guided blink training, but it does not test this product's much less frequent cue or establish dry-eye prevention in general screen users. ([Wolffsohn et al., 2023](https://doi.org/10.1016/j.jtos.2023.04.004); [Xu et al., 2025](https://doi.org/10.1038/s41746-025-02053-8))
-- In a four-week study, 54 people with dry-eye symptoms were asked to do a 10-second blink-exercise cycle every 20 minutes; 41 completed it. Symptoms and some blink/tear-film measures improved, but the study had no control group, and some objective measures did not change. The tested exercise is not the same as this app's 10-blink cue. ([Kim et al., 2021](https://pubmed.ncbi.nlm.nih.gov/32409236/))
-- A two-week 20-20-20 reminder study in 29 symptomatic computer users reported lower dry-eye and digital-eye-strain symptoms, but found no changes in measured ocular-surface or tear-film signs; symptom improvements were not maintained one week after reminders stopped. ([Talens-Estarelles et al., 2023](https://pubmed.ncbi.nlm.nih.gov/35963776/))
-- Evidence is not uniform: a laboratory crossover study of 30 young adults found that 20-second scheduled breaks every 5, 10, or 20 minutes did not significantly change symptoms, reading speed, or accuracy during a 40-minute tablet task. ([Johnson & Rosenfield, 2023](https://doi.org/10.1097/OPX.0000000000001971))
-
-**Product boundary:** the 20-minute interval, 20-second pet cue, and 10-blink suggestion are a simple habit prompt, not a clinically tested combination. Pet Pomodoro has not been tested as a health intervention and does not claim to prevent or treat dry eye, digital eye strain, or any medical condition. See [Scientific Basis and Claim Boundaries](docs/research/scientific-basis.md) for the full evidence notes.
-
 ## Product Visuals
 
 These AI-generated/composited product illustrations are for presentation; they are not unaltered screen recordings or proof of a particular runtime state.
@@ -49,25 +33,7 @@ These AI-generated/composited product illustrations are for presentation; they a
 
 ---
 
-## Why This Pomodoro Is Different
-
-**Science-informed rhythm.** Huberman Lab's focus toolkit popularized bounded focus bouts followed by deliberate recovery. Pet Pomodoro translates that ultradian-rhythm framing into three practical work/rest choices. The intervals are options to test, not a claim that every brain follows one exact clock.
-
-**A pet that makes the pause visible.** The compact tomato dial stays with your existing Codex pet while you work. At the break boundary, the pet expands from its usual position into a large, calm idle presence. This creates a noticeable pause in the visual flow without locking the Mac or taking control of the mouse.
-
-- **25/50/90 rhythms**: three starting points for different kinds of work:
-  - `25` (standard Pomodoro / 25 minutes work, 5 minutes rest)
-  - `50` (flow / 50 minutes work, 10 minutes rest)
-  - `90` (deep focus / 90 minutes work, 20 minutes rest)
-- **Pet-led rest takeover**: when work ends, the native pet becomes a large, low-motion visual cue for recovery rather than a separate timer window.
-- **Local records for AI analysis**: goals, timing events, and completion states are stored in SQLite and can be exported as JSON for analysis chosen by the user.
-- **Local-first runtime**: no cloud dependency, telemetry, hosted dashboard, or runtime network requirement.
-
----
-
 ## How It Works
-
-Missed eye-rest cues are not replayed after reconnecting or sleep. The focus countdown continues throughout each cue.
 
 The companion does not request or use Screen Recording or Accessibility permissions. It follows a native pet window when Codex exposes one; in voice mode it estimates the pet's lower-right position from the host window geometry. That estimate can drift if Codex changes its layout. If no supported pet/host window is exposed, the dial stays hidden rather than appearing at an unrelated screen edge. Run `codex-pet-companion doctor --json` for diagnostics.
 
@@ -91,6 +57,18 @@ Research also supports the mechanisms behind the product:
 - Systematic review evidence shows that computer prompts can measurably change break and activity behavior.
 
 `90/20` remains an optional experiment, not a biological prescription. Research does not establish one exact interval for every person or task, and this software has not itself been clinically tested. See [Scientific Basis and Claim Boundaries](docs/research/scientific-basis.md) for the evidence-to-feature mapping and complete source list.
+
+### Eye Breaks and Dry-Eye Awareness
+
+Pet Pomodoro also includes a `20-20-10` screen-break cue: after each 20 minutes of active focus, the pet enlarges for 20 seconds and prompts the user to look about 6 metres (20 feet) away and make 10 slow, gentle, complete blinks. Paused time does not count, the work countdown continues, and a cue missed during sleep or reconnection is not replayed. The 25/50/90-minute focus options produce one, two, or four cues. It does not monitor screen use or verify eye behavior, does not block input, and currently has no user-facing toggle or interval setting.
+
+This feature is intended as a **screen-break and dry-eye-awareness prompt**, not a proven dry-eye prevention method. Digital-screen viewing can be associated with blink changes, but current evidence for reminder-based interventions is limited and mixed; a small study of intensive app-guided blink training in people already diagnosed with dry eye does not validate this product's much less frequent cue. The exact 20-minute / 20-second / 10-blink combination has not been clinically tested, and Pet Pomodoro does not claim to prevent or treat dry eye, digital eye strain, or any medical condition. See [Scientific Basis and Claim Boundaries](docs/research/scientific-basis.md) for detailed evidence and limitations. ([TFOS Lifestyle report](https://doi.org/10.1016/j.jtos.2023.04.004); [Xu et al., 2025](https://doi.org/10.1038/s41746-025-02053-8); [Johnson & Rosenfield, 2023](https://doi.org/10.1097/OPX.0000000000001971))
+
+## Why This Pomodoro Is Different
+
+A standard Pomodoro timer gives you a work countdown and a break countdown. Pet Pomodoro keeps the familiar `25/5` option, adds `50/10` and `90/20` as optional rhythms inspired by Huberman Lab's ultradian framing, and brings the timer into the Codex pet experience. The intervals are personal starting points, not a claim that every brain follows one exact clock.
+
+During focus, the compact tomato dial stays beside the native pet. Unlike a timer that only changes the countdown, Pet Pomodoro also uses the pet for a `20-20-10` eye-break cue and for longer recovery periods. The eye cue is a dry-eye-awareness habit reminder, not a proven prevention or treatment, and the app does not monitor eye behavior. The same pet enlarges into a calm, low-motion presence at these cues, making the pause more visible without locking the Mac or taking control of the mouse. Local session records can be exported for user-directed AI analysis; the runtime has no cloud dependency, telemetry, or hosted dashboard.
 
 ---
 
