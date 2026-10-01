@@ -28,15 +28,20 @@ const SKIPPED_DIRECTORIES = new Set([
   'private-assets',
 ]);
 const IMAGE_EXTENSIONS = new Set(['.png', '.webp']);
+const APPROVED_PRESENTATION_IMAGES = new Set([
+  'docs/images/pet-pomodoro-companion-panel.png',
+  'docs/images/pet-pomodoro-focus-controls.png',
+  'docs/images/pet-pomodoro-rest-takeover.png',
+]);
 const textDecoder = new TextDecoder('utf-8', { fatal: true });
 
 function isSkippedDirectory(entryName) {
   return SKIPPED_DIRECTORIES.has(entryName) || entryName.endsWith('.egg-info');
 }
 
-function isAllowedExampleImage(repoRoot, filePath) {
+function isAllowedReleaseImage(repoRoot, filePath) {
   const relativePath = path.relative(repoRoot, filePath).split(path.sep).join('/');
-  return relativePath.startsWith('examples/example-pet/');
+  return relativePath.startsWith('examples/example-pet/') || APPROVED_PRESENTATION_IMAGES.has(relativePath);
 }
 
 function listCandidateFiles(repoRoot) {
@@ -102,21 +107,25 @@ test('release-sanitize: strict zero-exception candidate gate', async (t) => {
     assert.deepStrictEqual(failures, []);
   });
 
-  await t.test('PNG and WebP files are confined to the redistributable example pet', () => {
+  await t.test('PNG and WebP files are limited to the licensed example pet and approved README visuals', () => {
     const failures = [];
     const exampleRasterAssets = [];
     for (const file of files) {
       if (!IMAGE_EXTENSIONS.has(path.extname(file).toLowerCase())) continue;
-      if (!isAllowedExampleImage(repoRoot, file)) {
-        failures.push(path.relative(repoRoot, file).split(path.sep).join('/'));
+      const relativePath = path.relative(repoRoot, file).split(path.sep).join('/');
+      if (!isAllowedReleaseImage(repoRoot, file)) {
+        failures.push(relativePath);
       } else {
-        exampleRasterAssets.push(file);
+        if (relativePath.startsWith('examples/example-pet/')) exampleRasterAssets.push(file);
       }
     }
     assert.deepStrictEqual(failures, []);
     assert.ok(exampleRasterAssets.length > 0, 'examples/example-pet must include at least one redistributable raster asset');
     assert.ok(fs.existsSync(path.join(repoRoot, 'examples/example-pet/LICENSE')),
       'examples/example-pet must include a LICENSE adjacent to redistributable assets');
+    for (const relativePath of APPROVED_PRESENTATION_IMAGES) {
+      assert.ok(fs.existsSync(path.join(repoRoot, relativePath)), `${relativePath} must exist`);
+    }
   });
 
   await t.test('Packaging plists use {{HOME}} placeholder', () => {

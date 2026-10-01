@@ -13,9 +13,9 @@ The `sessions` table stores the selected preset, goal, planned durations, start/
 
 The timer writes on semantic events. It does not append a database row every second.
 
-## Screen capture and positioning
+## Window tracking and positioning
 
-The companion may request the macOS permission labeled Screen & System Audio Recording. It first uses window metadata; only when that is insufficient does it capture the matching ChatGPT/Codex window's pixels in memory to locate the pet's visual position. The app does not capture audio. The image is processed locally and is not saved to disk or transmitted by Pet Pomodoro. If permission is denied, this visual-matching path is unavailable. The app does not upload screen content, session data, or telemetry.
+The companion uses visible-window metadata and geometry to position the timer beside a supported Codex pet. It does not request Screen Recording, Screen & System Audio Recording, or Accessibility permissions; it does not capture window pixels or audio. In voice mode it estimates the pet position from the host window geometry, so the estimate can drift if the host layout changes. If no supported window is available, the companion hides the timer rather than guessing an unrelated screen position. The app does not upload screen content, session data, or telemetry.
 
 ## Export
 

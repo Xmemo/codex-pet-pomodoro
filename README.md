@@ -9,6 +9,13 @@
 
 A research-informed Pomodoro timer for macOS, inspired by Huberman Lab's discussion of ultradian rhythms. It lives beside your Codex pet during focus and turns that same pet into a prominent, calm break cue when it is time to pause.
 
+## 20-20-10 Eye-Rest Reminder
+
+> [!IMPORTANT]
+> **Every 20 minutes of active focus, the pet enlarges for 20 seconds.** The cue asks you to look about 6 metres (20 feet) away and complete 10 gentle blinks. Paused time does not count; the focus timer keeps running and the reminder does not block input.
+
+The 25/50/90-minute focus choices produce one, two, or four cues respectively. This reminder is built into the focus flow and does not currently have a user-facing on/off or timing setting. It is a behavioral prompt, not a promise to prevent or treat dry eye or any medical condition.
+
 ## Product Visuals
 
 These AI-generated/composited product illustrations are for presentation; they are not unaltered screen recordings or proof of a particular runtime state.
@@ -51,7 +58,7 @@ These AI-generated/composited product illustrations are for presentation; they a
 
 ## How It Works
 
-During a running focus session, an eye-rest cue appears every 20 minutes of focus time. The pet enlarges for 20 seconds with a reminder to look about 6 metres away and blink fully 10 times. Pauses do not count; missed cues are not replayed after reconnecting or sleep. The focus countdown continues. This is a reminder, not enforced screen blocking or a clinically validated dry-eye treatment.
+Missed eye-rest cues are not replayed after reconnecting or sleep. The focus countdown continues throughout each cue.
 
 The companion does not request or use Screen Recording or Accessibility permissions. It follows a native pet window when Codex exposes one; in voice mode it estimates the pet's lower-right position from the host window geometry. That estimate can drift if Codex changes its layout. If no supported pet/host window is exposed, the dial stays hidden rather than appearing at an unrelated screen edge. Run `codex-pet-companion doctor --json` for diagnostics.
 
@@ -92,7 +99,7 @@ Review exported history before sharing it: goals and timing can reveal private w
 - **No Built-in AI, Review UI, or Dashboard**: The timer stores local session records and exposes CLI history, but the simplified v0.1.0 panel does not collect reviews. It does not upload data, call an AI model, score productivity, or provide a hosted analytics dashboard.
 - **Not Medical Advice**: This is a focus timer, not a medical device or a treatment for attention, sleep, or health conditions.
 - **No Official Affiliation**: Unaffiliated with OpenAI or any official project.
-- **Screen Access**: Visual pet tracking can request macOS screen-capture permission for the ChatGPT/Codex window; see the [privacy details](docs/data-and-ai-analysis.md).
+- **Screen Access**: Pet tracking uses visible window metadata and geometry only. The companion does not request Screen Recording or Accessibility permissions or capture window pixels; see the [privacy details](docs/data-and-ai-analysis.md).
 
 ---
 
@@ -102,8 +109,7 @@ Review exported history before sharing it: goals and timing can reveal private w
 - **Node.js 20, 22, or 24**, signed by the official Node.js Foundation.
 - **Python 3.11 or newer** from uv, python.org, or Homebrew.
 - **Xcode Command Line Tools** with `xcrun swiftc`, needed only during installation to build the local Swift components.
-- **GitHub CLI (`gh`)** to verify release attestation when installing from a release.
-- **GitHub CLI (`gh`)** to verify signed release provenance before installation.
+- **GitHub CLI (`gh`)** to verify release provenance before installation.
 
 ---
 
