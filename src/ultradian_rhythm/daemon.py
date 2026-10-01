@@ -181,6 +181,7 @@ class TimerDaemon:
     def handle_connection(self, conn: socket.socket) -> None:
         buffer = bytearray()
         try:
+            conn.settimeout(1.0)
             msg = recv_message(conn, buffer)
             if not msg:
                 return
