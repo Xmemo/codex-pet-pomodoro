@@ -8,7 +8,20 @@ const STANDARD_ATLAS_WIDTH = 1536;
 const STANDARD_CELL_HEIGHT = 208;
 const MIN_ATLAS_HEIGHT = 1872;
 const MIN_ROWS = 9;
-const MAX_ROWS = 9;
+const MAX_ROWS = 16;
+const MAX_ATLAS_BYTES = 64 * 1024 * 1024;
+const MAX_PET_MANIFEST_BYTES = 64 * 1024;
+const MAX_SELECTION_CONFIG_BYTES = 1024 * 1024;
+
+function readBoundedText(fsMod, filePath, maxBytes) {
+  if (typeof fsMod.statSync === 'function') {
+    const stat = fsMod.statSync(filePath);
+    if (!stat.isFile() || stat.size > maxBytes) throw new Error('file exceeds the supported size limit');
+  }
+  const content = fsMod.readFileSync(filePath, 'utf8');
+  if (Buffer.byteLength(content, 'utf8') > maxBytes) throw new Error('file exceeds the supported size limit');
+  return content;
+}
 
 function validateNotEmpty(value, fieldName) {
   if (value === undefined || value === null) return `${fieldName} is missing`;
@@ -57,6 +70,9 @@ function parsePetManifest(petDir, petJson, expectedPetIdOrOptions) {
   if (!stat.isFile()) {
     return { valid: false, errors: ['spritesheetPath must be a regular file'] };
   }
+  if (stat.size <= 0 || stat.size > MAX_ATLAS_BYTES) {
+    return { valid: false, errors: [`spritesheetPath must be between 1 byte and ${MAX_ATLAS_BYTES} bytes`] };
+  }
 
   return {
     valid: true,
@@ -82,12 +98,15 @@ function validateAtlasDimensions(width, height) {
   if (height % STANDARD_CELL_HEIGHT !== 0) {
     errors.push(`Atlas height must be divisible by ${STANDARD_CELL_HEIGHT}, got ${height}`);
   }
+  const rows = height / STANDARD_CELL_HEIGHT;
+  if (rows < MIN_ROWS || rows > MAX_ROWS) {
+    errors.push(`Atlas rows must be in [${MIN_ROWS}, ${MAX_ROWS}], got ${rows}`);
+  }
   if (errors.length > 0) {
     return { valid: false, errors, columns: 0, rows: 0 };
   }
 
   const columns = width / 192;
-  const rows = height / STANDARD_CELL_HEIGHT;
 
   return {
     valid: true,
@@ -105,7 +124,7 @@ function getRowMapping(rows) {
     'failed', 'waiting', 'running', 'review',
   ];
   const mapping = {};
-  const effectiveRows = rows; // Allow rows >= 9, they are read but rows >= 9 extra mapping row names not standard
+  const effectiveRows = Math.min(rows, MAX_ROWS);
   for (let i = 0; i < effectiveRows && i < rowNames.length; i++) {
     mapping[i] = rowNames[i];
   }
@@ -154,7 +173,7 @@ function readConfigToml(deps = {}) {
   const paths = deps.paths || companionPaths;
   try {
     if (!fsMod.existsSync(paths.CODEX_CONFIG_PATH)) return null;
-    const content = fsMod.readFileSync(paths.CODEX_CONFIG_PATH, 'utf8');
+    const content = readBoundedText(fsMod, paths.CODEX_CONFIG_PATH, MAX_SELECTION_CONFIG_BYTES);
     const match = content.match(/^\s*selected-avatar-id\s*=\s*"([^"]*)"\s*$/m);
     if (match) return match[1];
     const unquotedMatch = content.match(/^\s*selected-avatar-id\s*=\s*(\S+)\s*$/m);
@@ -170,7 +189,7 @@ function readCompanionConfigJson(deps = {}) {
   const paths = deps.paths || companionPaths;
   try {
     if (!fsMod.existsSync(paths.COMPANION_CONFIG_PATH)) return null;
-    const content = fsMod.readFileSync(paths.COMPANION_CONFIG_PATH, 'utf8');
+    const content = readBoundedText(fsMod, paths.COMPANION_CONFIG_PATH, MAX_PET_MANIFEST_BYTES);
     return JSON.parse(content);
   } catch {
     return null;
@@ -272,7 +291,7 @@ function resolvePetId(deps = {}) {
 
     let petJson;
     try {
-      petJson = JSON.parse(fsMod.readFileSync(petJsonPath, 'utf8'));
+      petJson = JSON.parse(readBoundedText(fsMod, petJsonPath, MAX_PET_MANIFEST_BYTES));
     } catch (e) {
       result.error = `Failed to parse pet.json: ${e.message}`;
       return result;
@@ -319,5 +338,6 @@ module.exports = {
   MIN_ATLAS_HEIGHT,
   MIN_ROWS,
   MAX_ROWS,
+  MAX_ATLAS_BYTES,
+  MAX_PET_MANIFEST_BYTES,
 };
-

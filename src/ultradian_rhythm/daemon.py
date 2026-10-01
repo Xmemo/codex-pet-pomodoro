@@ -3,12 +3,33 @@ import sys
 import socket
 import select
 import time
-from .storage import Storage, STATE_DIR, ensure_private_dir
+import fcntl
+import stat
+from .storage import Storage, STATE_DIR
 from .notifier import MacNotifier
 from .engine import TimerEngine
 from .protocol import recv_message, send_message
 
 SOCKET_PATH = os.path.join(STATE_DIR, "daemon.sock")
+LOCK_PATH = os.path.join(STATE_DIR, "daemon.lock")
+
+
+def acquire_single_instance_lock(lock_path: str) -> int:
+    flags = os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(lock_path, flags, 0o600)
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid():
+            raise RuntimeError("daemon lock must be a regular file owned by the current user")
+        os.fchmod(fd, 0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise RuntimeError("timer daemon is already running") from exc
+        return fd
+    except Exception:
+        os.close(fd)
+        raise
 
 def validate_command_payload(msg: dict) -> None:
     if not isinstance(msg, dict):
@@ -76,12 +97,23 @@ def validate_command_payload(msg: dict) -> None:
 class TimerDaemon:
     def __init__(self, socket_path: str = SOCKET_PATH) -> None:
         self.socket_path = socket_path
+        self.lock_path = f"{socket_path}.lock"
+        self.lock_fd = None
         self.storage = Storage()
         self.notifier = MacNotifier()
         self.engine = TimerEngine(self.storage, self.notifier, time_func=time.time)
         self.running = True
 
     def run(self) -> None:
+        socket_dir = os.path.dirname(self.socket_path)
+        if socket_dir:
+            os.makedirs(socket_dir, exist_ok=True)
+        try:
+            self.lock_fd = acquire_single_instance_lock(self.lock_path)
+        except Exception as e:
+            sys.stderr.write(f"Failed to acquire timer daemon lock: {e}\n")
+            sys.exit(4)
+
         # 1. Immediate recovery upon start
         try:
             self.engine.tick(time.time())
@@ -95,10 +127,6 @@ class TimerDaemon:
             except Exception as e:
                 sys.stderr.write(f"Failed to remove existing socket file: {e}\n")
                 sys.exit(3)
-
-        socket_dir = os.path.dirname(self.socket_path)
-        if socket_dir:
-            ensure_private_dir(socket_dir)
 
         server_sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         try:
@@ -146,6 +174,9 @@ class TimerDaemon:
                     os.remove(self.socket_path)
                 except Exception:
                     pass
+            if self.lock_fd is not None:
+                os.close(self.lock_fd)
+                self.lock_fd = None
 
     def handle_connection(self, conn: socket.socket) -> None:
         buffer = bytearray()

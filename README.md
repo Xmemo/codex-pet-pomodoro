@@ -9,6 +9,13 @@
 
 A research-informed Pomodoro timer for macOS, inspired by Huberman Lab's discussion of ultradian rhythms. It lives beside your Codex pet during focus and turns that same pet into a prominent, calm break cue when it is time to pause.
 
+## 20-20-10 Eye-Rest Reminder
+
+> [!IMPORTANT]
+> **Every 20 minutes of active focus, the pet enlarges for 20 seconds.** The cue asks you to look about 6 metres (20 feet) away and complete 10 gentle blinks. Paused time does not count; the focus timer keeps running and the reminder does not block input.
+
+The 25/50/90-minute focus choices produce one, two, or four cues respectively. This reminder is built into the focus flow and does not currently have a user-facing on/off or timing setting. It is a behavioral prompt, not a promise to prevent or treat dry eye or any medical condition.
+
 ## Product Visuals
 
 These AI-generated/composited product illustrations are for presentation; they are not unaltered screen recordings or proof of a particular runtime state.
@@ -51,6 +58,10 @@ These AI-generated/composited product illustrations are for presentation; they a
 
 ## How It Works
 
+Missed eye-rest cues are not replayed after reconnecting or sleep. The focus countdown continues throughout each cue.
+
+The companion does not request or use Screen Recording or Accessibility permissions. It follows a native pet window when Codex exposes one; in voice mode it estimates the pet's lower-right position from the host window geometry. That estimate can drift if Codex changes its layout. If no supported pet/host window is exposed, the dial stays hidden rather than appearing at an unrelated screen edge. Run `codex-pet-companion doctor --json` for diagnostics.
+
 1. Choose `25/5`, `50/10`, or `90/20`.
 2. Work with the compact tomato dial beside your Codex pet.
 3. At rest time, the pet grows into a fullscreen, low-motion idle presence.
@@ -76,7 +87,7 @@ Research also supports the mechanisms behind the product:
 
 ## Privacy
 
-Pet Pomodoro stores goals and session history locally in `~/.codex/ultradian-rhythm`. It does not upload session data, run telemetry, or call an AI model. The companion may request the macOS permission labeled “Screen & System Audio Recording”: when window metadata alone cannot locate the pet, it captures the matching ChatGPT/Codex window's pixels in memory to find the pet's visual position. It does not capture audio. The image is used locally for positioning and is not saved or transmitted by the app. Denying permission disables that visual-matching path; it does not send screen content elsewhere.
+Pet Pomodoro stores goals and session history locally in `~/.codex/ultradian-rhythm`. It does not upload session data, run telemetry, or call an AI model. Pet tracking uses visible window metadata and geometry only; the companion does not request Screen Recording or Accessibility permissions, capture window pixels, or save screenshots.
 
 Review exported history before sharing it: goals and timing can reveal private work context. See [Local Data and User-Directed AI Analysis](docs/data-and-ai-analysis.md).
 
@@ -88,17 +99,17 @@ Review exported history before sharing it: goals and timing can reveal private w
 - **No Built-in AI, Review UI, or Dashboard**: The timer stores local session records and exposes CLI history, but the simplified v0.1.0 panel does not collect reviews. It does not upload data, call an AI model, score productivity, or provide a hosted analytics dashboard.
 - **Not Medical Advice**: This is a focus timer, not a medical device or a treatment for attention, sleep, or health conditions.
 - **No Official Affiliation**: Unaffiliated with OpenAI or any official project.
-- **Screen Access**: Visual pet tracking can request macOS screen-capture permission for the ChatGPT/Codex window; see the [privacy details](docs/data-and-ai-analysis.md).
+- **Screen Access**: Pet tracking uses visible window metadata and geometry only. The companion does not request Screen Recording or Accessibility permissions or capture window pixels; see the [privacy details](docs/data-and-ai-analysis.md).
 
 ---
 
 ## Prerequisites
 
 - **macOS**.
-- **Python 3.11 or newer** available as an executable Python.
-- **Node.js**. The installer first tries bundled Node from Codex or ChatGPT, then falls back to `node` on `PATH`.
-- **Xcode Command Line Tools** with `xcrun swiftc` available for the Swift renderer build.
-- **GitHub CLI (`gh`)** to verify signed release provenance before installation.
+- **Node.js 20, 22, or 24**, signed by the official Node.js Foundation.
+- **Python 3.11 or newer** from uv, python.org, or Homebrew.
+- **Xcode Command Line Tools** with `xcrun swiftc`, needed only during installation to build the local Swift components.
+- **GitHub CLI (`gh`)** to verify release provenance before installation.
 
 ---
 
@@ -166,12 +177,11 @@ Run from the repository root:
 ./scripts/install.sh
 ```
 
-The installer copies the project into the current user's local application data, installs CLI wrappers under `~/.local/bin`, and writes these LaunchAgents:
+The installer copies the project and pinned Node/Python runtimes to the current user's internal `~/.local/share/codex-ultradian-rhythm` directory, compiles the Swift components during installation, installs CLI wrappers under `~/.local/bin`, and registers one user-level LaunchAgent:
 
-- `~/Library/LaunchAgents/io.github.codex-ultradian-rhythm.plist`
 - `~/Library/LaunchAgents/io.github.codex-pet-companion.plist`
 
-Payload staging, compile, and activation swap roll back before the new payload is committed. After the payload is committed, timer service failure attempts to restore an explicitly configured legacy service; companion failure stops the companion service but keeps the verified new timer and existing state.
+The LaunchAgent keeps the timer daemon alive across Codex restarts and starts the pet overlay only while a supported Codex/ChatGPT app is running. The overlay follows the pet and hides with it. Countdown state resumes from its locally persisted deadline. No root helper is installed, and the service does not modify the Codex/ChatGPT app. If macOS blocks the background item, allow it under **System Settings → General → Login Items & Extensions**; the installer never edits macOS permission databases. Installation swaps managed files transactionally and preserves the prior payload and service files under `~/.codex/ultradian-rhythm/migration-backups` until the new supervisor passes health checks.
 
 ---
 
@@ -204,6 +214,8 @@ codex-pet-companion preview --pet <id> --state exit
 codex-pet-companion start
 codex-pet-companion stop
 codex-pet-companion status
+codex-pet-companion doctor --json
+codex-pet-companion repair
 codex-pet-companion config set pet auto
 codex-pet-companion config set pet <id>
 ```
@@ -225,7 +237,9 @@ Command contracts are documented in [cli-commands.md](docs/contracts/cli-command
 
 - **Swift Renderer Compilation Fails**: Ensure Xcode Command Line Tools are installed via `xcode-select --install`.
 - **CLI Commands Not Found**: Ensure `~/.local/bin` is added to your terminal environment `PATH` variable.
-- **LaunchAgents Not Running**: Check status with `launchctl list | grep codex` or inspect `~/Library/Logs/` for logs.
+- **Background service is not running**: Run `codex-pet-companion doctor --json`. If macOS reports the item as disallowed, enable it in System Settings → General → Login Items & Extensions, then run `codex-pet-companion repair`.
+- **Pet overlay is missing**: The timer remains active independently. Check `codex-pet-companion doctor --json` and `~/.codex/ultradian-rhythm/supervisor.log`; an unsupported or undetected pet hides the overlay instead of pinning it elsewhere.
+- **Runtime or renderer problem**: Run `codex-pet-companion repair`. The renderer is built during installation, so normal operation does not require Xcode or an external drive to remain connected.
 
 ---
 

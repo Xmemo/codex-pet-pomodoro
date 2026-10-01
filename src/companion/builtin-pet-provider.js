@@ -6,8 +6,10 @@ const companionPaths = require('./paths.js');
 const STANDARD_ATLAS_WIDTH = 1536;
 const MIN_ATLAS_HEIGHT = 1872;
 const STANDARD_CELL_HEIGHT = 208;
+const MAX_ATLAS_ROWS = 16;
 const MAX_JSON_HEADER_SIZE = 50 * 1024 * 1024; // 50 MB
 const MAX_ENTRY_SIZE = 64 * 1024 * 1024; // 64 MiB
+const MAX_CACHED_MANIFEST_SIZE = 64 * 1024;
 
 function validateWebPHeader(buffer, expectedFileSize = null) {
   if (!Buffer.isBuffer(buffer) || buffer.length < 30) {
@@ -71,6 +73,10 @@ function validateWebPHeader(buffer, expectedFileSize = null) {
   }
   if (height % STANDARD_CELL_HEIGHT !== 0) {
     return { valid: false, error: `WebP atlas height must be divisible by ${STANDARD_CELL_HEIGHT}, got ${height}` };
+  }
+  const rows = height / STANDARD_CELL_HEIGHT;
+  if (rows > MAX_ATLAS_ROWS) {
+    return { valid: false, error: `WebP atlas rows must not exceed ${MAX_ATLAS_ROWS}, got ${rows}` };
   }
 
   return { valid: true, width, height, chunkType, totalRiffSize };
@@ -262,6 +268,7 @@ function isCacheValid(cacheDir, cachedWebpPath, cachedPetJsonPath, expectedSize,
     if (webpStat.size !== expectedSize) {
       return false;
     }
+    if (jsonStat.size <= 0 || jsonStat.size > MAX_CACHED_MANIFEST_SIZE) return false;
 
     const webpBuf = fsMod.readFileSync(cachedWebpPath);
     const webpVal = validateWebPHeader(webpBuf, webpBuf.length);

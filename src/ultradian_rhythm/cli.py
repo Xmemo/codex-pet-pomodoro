@@ -8,6 +8,16 @@ from typing import Dict, Any
 from .protocol import send_message, recv_message
 from .daemon import SOCKET_PATH
 
+MAX_GOAL_CHARS = 4096
+MAX_REVIEW_CHARS = 16384
+
+
+def read_stdin_text(limit: int, label: str, parser: argparse.ArgumentParser) -> str:
+    value = sys.stdin.read(limit + 1)
+    if len(value) > limit:
+        parser.error(f"{label} exceeds the {limit}-character limit.")
+    return value
+
 def format_seconds(seconds: float) -> str:
     mins = int(seconds) // 60
     secs = int(seconds) % 60
@@ -56,7 +66,9 @@ def main() -> None:
     # start
     parser_start = subparsers.add_parser("start")
     parser_start.add_argument("preset", nargs="?", choices=["start", "flow", "deep"], default="flow")
-    parser_start.add_argument("--goal", required=True)
+    goal_group = parser_start.add_mutually_exclusive_group(required=True)
+    goal_group.add_argument("--goal")
+    goal_group.add_argument("--goal-stdin", action="store_true")
     parser_start.add_argument("--replace", action="store_true")
     parser_start.add_argument("--json", action="store_true")
 
@@ -83,7 +95,9 @@ def main() -> None:
     # review
     parser_review = subparsers.add_parser("review")
     parser_review.add_argument("--outcome", choices=["done", "partial", "switched"], required=True)
-    parser_review.add_argument("--text", default="")
+    review_text_group = parser_review.add_mutually_exclusive_group()
+    review_text_group.add_argument("--text")
+    review_text_group.add_argument("--text-stdin", action="store_true")
     parser_review.add_argument("--json", action="store_true")
 
     # history
@@ -100,7 +114,8 @@ def main() -> None:
     # Formulate command dict
     cmd_dict = {"command": args.command}
     if args.command == "start":
-        goal = args.goal.strip()
+        goal = args.goal if args.goal is not None else read_stdin_text(MAX_GOAL_CHARS, "Goal", parser)
+        goal = goal.strip()
         if not goal:
             parser.error("Goal cannot be empty or whitespace only.")
         cmd_dict["preset"] = args.preset
@@ -108,7 +123,10 @@ def main() -> None:
         cmd_dict["replace"] = args.replace
     elif args.command == "review":
         cmd_dict["outcome"] = args.outcome
-        cmd_dict["text"] = args.text
+        text = args.text if args.text is not None else (
+            read_stdin_text(MAX_REVIEW_CHARS, "Review text", parser) if args.text_stdin else ""
+        )
+        cmd_dict["text"] = text
     elif args.command == "history":
         limit = args.limit
         if limit < 1 or limit > 200:

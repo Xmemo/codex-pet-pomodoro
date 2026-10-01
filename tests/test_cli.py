@@ -109,6 +109,35 @@ class TestTimerCLI(unittest.TestCase):
     @patch("src.ultradian_rhythm.cli.recv_message")
     @patch("src.ultradian_rhythm.cli.send_message")
     @patch("src.ultradian_rhythm.cli.os.path.exists", return_value=True)
+    def test_cli_start_reads_adversarial_goal_literally_from_stdin(self, mock_exists: MagicMock, mock_send: MagicMock, mock_recv: MagicMock, mock_socket: MagicMock) -> None:
+        mock_recv.return_value = {"ok": True, "operation": "start", "state": {}}
+        goal = "--literal $(touch /tmp/should-not-exist) `whoami`; quote ' and \"\nsecond line"
+        with patch.object(sys, "argv", ["ultradian", "start", "flow", "--goal-stdin"]):
+            with patch.object(sys, "stdin", io.StringIO(goal)):
+                with self.assertRaises(SystemExit) as cm:
+                    cli.main()
+                self.assertEqual(cm.exception.code, 0)
+
+        sent_cmd = mock_send.call_args[0][1]
+        self.assertEqual(sent_cmd["intentionText"], goal)
+
+    @patch("src.ultradian_rhythm.cli.socket.socket")
+    @patch("src.ultradian_rhythm.cli.recv_message")
+    @patch("src.ultradian_rhythm.cli.send_message")
+    @patch("src.ultradian_rhythm.cli.os.path.exists", return_value=True)
+    def test_cli_rejects_oversized_goal_stdin(self, mock_exists: MagicMock, mock_send: MagicMock, mock_recv: MagicMock, mock_socket: MagicMock) -> None:
+        from src.ultradian_rhythm.cli import MAX_GOAL_CHARS
+        with patch.object(sys, "argv", ["ultradian", "start", "flow", "--goal-stdin"]):
+            with patch.object(sys, "stdin", io.StringIO("x" * (MAX_GOAL_CHARS + 1))):
+                with self.assertRaises(SystemExit) as cm:
+                    cli.main()
+                self.assertEqual(cm.exception.code, 2)
+        mock_send.assert_not_called()
+
+    @patch("src.ultradian_rhythm.cli.socket.socket")
+    @patch("src.ultradian_rhythm.cli.recv_message")
+    @patch("src.ultradian_rhythm.cli.send_message")
+    @patch("src.ultradian_rhythm.cli.os.path.exists", return_value=True)
     def test_cli_start_implicit_preset_with_intention(self, mock_exists: MagicMock, mock_send: MagicMock, mock_recv: MagicMock, mock_socket: MagicMock) -> None:
         mock_recv.return_value = {
             "ok": True,

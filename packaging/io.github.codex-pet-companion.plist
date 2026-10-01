@@ -6,31 +6,34 @@
     <string>io.github.codex-pet-companion</string>
     <key>ProgramArguments</key>
     <array>
-        <string>{{NODE_BIN}}</string>
-        <string>{{INSTALL_DIR}}/bin/codex-pet-companion.js</string>
-        <string>start</string>
+        <string>{{INSTALL_DIR}}/bin/codex-pet-supervisor</string>
     </array>
     <key>EnvironmentVariables</key>
     <dict>
         <key>HOME</key>
         <string>{{HOME}}</string>
+        <key>CODEX_PET_INSTALL_DIR</key>
+        <string>{{INSTALL_DIR}}</string>
+        <key>CODEX_PET_NODE_BIN</key>
+        <string>{{INSTALL_DIR}}/runtime/bin/node</string>
+        <key>CODEX_PET_PYTHON_BIN</key>
+        <string>{{INSTALL_DIR}}/runtime/python/bin/{{PYTHON_BIN_NAME}}</string>
         <key>NODE_ENV</key>
         <string>production</string>
     </dict>
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>
-    <dict>
-        <key>SuccessfulExit</key>
-        <false/>
-    </dict>
-    <key>ThrottleInterval</key>
-    <integer>10</integer>
+    <true/>
+    <key>AbandonProcessGroup</key>
+    <false/>
     <key>ProcessType</key>
     <string>Background</string>
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
     <key>StandardOutPath</key>
-    <string>{{HOME}}/.codex/ultradian-rhythm/companion-launchctl.log</string>
+    <string>/dev/null</string>
     <key>StandardErrorPath</key>
-    <string>{{HOME}}/.codex/ultradian-rhythm/companion-launchctl.err</string>
+    <string>/dev/null</string>
 </dict>
 </plist>

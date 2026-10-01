@@ -8,6 +8,7 @@ const { startBridge, compileSwiftRenderer } = require('../src/companion/bridge.j
 const companionPathsMod = require('../src/companion/paths.js');
 const statusMod = require('../src/companion/status.js');
 const lifecycle = require('../src/companion/worker-lifecycle.js');
+const serviceManager = require('../src/companion/service-manager.js');
 
 function printUsage() {
   console.log('Usage: codex-pet-companion <command> [options]');
@@ -15,9 +16,11 @@ function printUsage() {
   console.log('Commands:');
   console.log('  validate-pet <path>           Validate a pet package');
   console.log('  preview --pet <id> --state <s> Preview an animation state');
-  console.log('  start                         Start the companion engine');
-  console.log('  stop                          Stop the companion engine');
+  console.log('  start                         Start the background companion service');
+  console.log('  stop                          Stop the background companion service');
   console.log('  status                        Query engine status');
+  console.log('  doctor --json                 Diagnose permissions and runtime health');
+  console.log('  repair                        Restart the supervisor after fixing a cause');
   console.log('  config set pet <id|auto>      Set pet configuration');
   console.log('  --help                        Show this help');
 }
@@ -323,37 +326,43 @@ function handlePreview(args) {
 }
 
 async function handleStart() {
-  const deps = lifecycle.createDeps();
-  const result = await lifecycle.startManager(deps);
-  if (result.started) {
-    if (result.alreadyRunning) {
-      console.log('Engine already running');
-    } else {
-      console.log('Companion engine started');
-    }
+  try {
+    const result = serviceManager.start();
+    console.log(result.alreadyRunning ? 'Pet companion service is already running.' : 'Pet companion service started.');
     process.exit(0);
-    return;
+  } catch (err) {
+    console.error('Error: ' + err.message);
+    process.exit(1);
   }
-  console.error('Error: ' + (result.error || 'failed to start engine'));
-  process.exit(1);
 }
 
 async function handleStop() {
-  const deps = lifecycle.createDeps();
-  const result = await lifecycle.stopManager(deps);
-  if (result.stopped) {
-    if (result.alreadyStopped) {
-      console.log('Engine not running');
-    } else if (result.cleanedStale) {
-      console.log('Engine not running (stale PID cleaned)');
-    } else {
-      console.log('Companion engine stopped');
-    }
+  try {
+    const result = serviceManager.stop();
+    console.log(result.alreadyStopped ? 'Pet companion service is already stopped.' : 'Pet companion service stopped for this login session.');
     process.exit(0);
-    return;
+  } catch (err) {
+    console.error('Error: ' + err.message);
+    process.exit(1);
   }
-  console.error('Error: ' + (result.error || 'failed to stop engine'));
-  process.exit(1);
+}
+
+function handleDoctor() {
+  const result = serviceManager.doctor();
+  if (process.argv.includes('--json')) console.log(JSON.stringify(result, null, 2));
+  else console.log(JSON.stringify(result, null, 2));
+  process.exit(result.ok ? 0 : 1);
+}
+
+function handleRepair() {
+  try {
+    const result = serviceManager.repair();
+    console.log(result.action);
+    process.exit(0);
+  } catch (err) {
+    console.error('Error: ' + err.message);
+    process.exit(1);
+  }
 }
 
 function handleStatus() {
@@ -434,6 +443,12 @@ async function main() {
       break;
     case 'status':
       handleStatus();
+      break;
+    case 'doctor':
+      handleDoctor();
+      break;
+    case 'repair':
+      handleRepair();
       break;
     case 'config':
       handleConfig(rest);

@@ -416,7 +416,11 @@ test('G3B Swift deterministic status sequence emits semantic NDJSON only', async
       'error',
       'fps',
       'isPaused',
+      'mainWindowFallbackAnchor',
+      'petAnchorFound',
+      'visualAnchorDiagnostic',
       'targetHeightRatio',
+      'timerPanelVisible',
       'windowVisible',
       'kind',
       'panelReady',
@@ -436,6 +440,10 @@ test('G3B Swift deterministic status sequence emits semantic NDJSON only', async
       assert.deepStrictEqual(Object.keys(event).sort(), expectedFields);
     }
     assert.strictEqual(events[0].anchorFound, true);
+    assert.strictEqual(events[0].petAnchorFound, false);
+    assert.strictEqual(events[0].mainWindowFallbackAnchor, true);
+    assert.strictEqual(events[0].visualAnchorDiagnostic, 'main-window-only');
+    assert.strictEqual(events[0].timerPanelVisible, false);
     assert.strictEqual(events[0].windowVisible, false);
     for (const event of events.slice(1, 6)) {
       assert.strictEqual(event.windowVisible, true);
@@ -453,7 +461,7 @@ test('G3B Swift deterministic status sequence emits semantic NDJSON only', async
   }
 });
 
-test('T010: Trusted pet anchor & timer panel eligibility', async (t) => {
+test('T010: Native and geometry-estimated pet anchors control timer panel eligibility', async (t) => {
   if (!hasXcrun) {
     t.skip('xcrun not available');
     return;
@@ -466,6 +474,7 @@ test('T010: Trusted pet anchor & timer panel eligibility', async (t) => {
     const parsed = JSON.parse(result.trim());
     assert.strictEqual(parsed.valid, true, 'Trusted pet anchor test failed');
     assert.strictEqual(parsed.trustedPetCase, true, 'Layer-3 408x400 Codex pet must be trusted and make timer panel eligible');
+    assert.strictEqual(parsed.voicePetHostCase, true, 'Supported voice-host geometry should estimate an anchor and show the timer panel');
     assert.strictEqual(parsed.mainWindowOnlyCase, true, 'Main window alone must anchor engine but keep timer panel hidden');
     assert.strictEqual(parsed.noAnchorCase, true, 'No trusted anchor must hide timer panel');
   } finally {
@@ -570,7 +579,7 @@ test('014 Visual pet template matching: --test-visual-match validates in-memory 
   }
 });
 
-test('014 Voice pet anchor uses configured pet size and bounded capture permission', async (t) => {
+test('014 Voice pet anchor estimates position from host geometry without Screen Recording', async (t) => {
   if (!hasXcrun) {
     t.skip('xcrun not available');
     return;
@@ -579,13 +588,13 @@ test('014 Voice pet anchor uses configured pet size and bounded capture permissi
   compileSwiftRenderer(tempBin);
 
   try {
-    const result = execFileSync(tempBin, ['--test-voice-visual-anchor'], { encoding: 'utf8' });
+    const result = execFileSync(tempBin, ['--test-voice-geometry-anchor'], { encoding: 'utf8' });
     const parsed = JSON.parse(result.trim());
-    assert.strictEqual(parsed.valid, true, 'Voice visual anchor test failed');
-    assert.strictEqual(parsed.positive, true, 'The visible pet must be located at its configured small size');
-    assert.strictEqual(parsed.retainedBriefly, true, 'A single missed frame may retain the anchor briefly');
-    assert.strictEqual(parsed.hiddenWhenStale, true, 'A stale visual match must hide the panel');
-    assert.strictEqual(parsed.permissionBounded, true, 'Denied capture permission must be requested only once');
+    assert.strictEqual(parsed.valid, true, 'Voice host geometry anchor test failed');
+    assert.strictEqual(parsed.geometryEstimated, true, 'The pet position should follow the host geometry estimate');
+    assert.strictEqual(parsed.panelVisible, true, 'The timer panel should follow an eligible voice host');
+    assert.strictEqual(parsed.wideHostRestored, true, 'The smoothed anchor should follow a different host size');
+    assert.strictEqual(parsed.hiddenWhenHostMissing, true, 'The panel should hide when no pet host exists');
   } finally {
     try { fs.rmSync(path.dirname(tempBin), { recursive: true, force: true }); } catch (_) {}
   }

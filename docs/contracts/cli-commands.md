@@ -35,24 +35,24 @@ Standalone preview window for a specific animation state.
 
 ### `codex-pet-companion start`
 
-Start the companion animation engine daemon.
+Idempotently load and start the user-level supervisor LaunchAgent.
 
 | Aspect | Specification |
 |--------|---------------|
-| **Behavior** | Launches the Node.js bridge process which: reads `selected-avatar-id`, loads pet assets, compiles Swift renderer (if needed), spawns renderer subprocess, connects to existing ultradian daemon via `daemon.sock`, and begins listening for state transitions. |
-| **Prerequisites** | Existing ultradian rhythm daemon must be running (`daemon.sock` accessible). |
-| **Exit code 0** | Engine started successfully |
-| **Exit code 1** | Failed (daemon not running, pet unavailable, Swift compilation failed) |
-| **Idempotency** | If already running, reports current status and exits 0. |
+| **Behavior** | Loads the single LaunchAgent if necessary and kickstarts the supervisor. macOS owns its login-session lifetime. The timer daemon runs independently; the pet worker starts only while a supported Codex/ChatGPT app is running. |
+| **Prerequisites** | macOS must allow the background item; the installed runtime manifest and binaries must be intact. |
+| **Exit code 0** | Service is loaded or has been started. |
+| **Exit code 1** | macOS has disallowed the background item or launchd rejected the service. |
+| **Idempotency** | An already-running LaunchAgent is left untouched. |
 
 ### `codex-pet-companion stop`
 
-Stop the companion animation engine.
+Unload the supervisor LaunchAgent and stop its timer and companion child processes for the current login session.
 
 | Aspect | Specification |
 |--------|---------------|
-| **Behavior** | Sends SIGTERM to the companion bridge process (identified by PID file). Validates PID ownership before killing. |
-| **Exit code 0** | Engine stopped or was not running |
+| **Behavior** | Uses `launchctl bootout` on the exact user LaunchAgent label. The timer state remains persisted; no PID-name matching or broad process kill is used. |
+| **Exit code 0** | Service stopped or was not loaded |
 | **Idempotency** | Safe to call multiple times. |
 
 ### `codex-pet-companion status`
@@ -63,6 +63,14 @@ Query engine status.
 |--------|---------------|
 | **stdout** | Human-readable status summary by default. With `--json` flag: JSON object per data-model §6. |
 | **Exit code 0** | Status retrieved (engine may be running or stopped) |
+
+### `codex-pet-companion doctor --json`
+
+Read-only diagnostics for launchd/background permission, supervisor and timer state, Codex app state, pet status, and installed runtime hashes. A disallowed macOS background item is reported with the Settings path; no system permission database is changed.
+
+### `codex-pet-companion repair`
+
+After a cause is resolved, performs a bounded restart of the supervisor LaunchAgent. It does not bypass macOS background-item permissions or delete timer/session data.
 
 ### `codex-pet-companion config set pet auto|<id>`
 
@@ -80,6 +88,6 @@ Override the active pet binding.
 ## Common Rules
 
 1. No command establishes network connections.
-2. No command reads or modifies `ChatGPT.app` internals.
+2. Built-in pet resolution may read one matching atlas entry from an installed Codex or ChatGPT app ASAR. It never writes to or modifies the app.
 3. All commands exit with non-zero on unrecoverable errors and print diagnostics to stderr.
 4. All commands are safe to run while the existing `ultradian` timer is active — they do not modify timer state or daemon behavior.

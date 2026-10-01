@@ -20,11 +20,60 @@ const {
 const READY_TIMEOUT_MS = 30000;
 const STOP_TIMEOUT_MS = 30000;
 const POLL_INTERVAL_MS = 100;
+const MAX_PET_MANIFEST_BYTES = 64 * 1024;
+const MAX_COMPANION_CONFIG_BYTES = 1024 * 1024;
+const MAX_USER_CONFIG_BYTES = 64 * 1024;
 
-function safeReadJson(fsMod, p) {
+function readBoundedText(fsImpl, filePath, maxBytes, label) {
+  if (typeof fsImpl.openSync === 'function' && typeof fsImpl.fstatSync === 'function'
+      && typeof fsImpl.readSync === 'function' && typeof fsImpl.closeSync === 'function') {
+    let fd;
+    try {
+      const noFollow = fsImpl.constants && fsImpl.constants.O_NOFOLLOW ? fsImpl.constants.O_NOFOLLOW : 0;
+      fd = fsImpl.openSync(filePath, fsImpl.constants.O_RDONLY | noFollow);
+      const stat = fsImpl.fstatSync(fd);
+      if (!stat.isFile() || stat.size > maxBytes) {
+        throw new Error(`${label} exceeds the ${maxBytes}-byte limit or is not a regular file`);
+      }
+      const chunks = [];
+      const buffer = Buffer.alloc(Math.min(8192, maxBytes + 1));
+      let total = 0;
+      while (total <= maxBytes) {
+        const length = Math.min(buffer.length, maxBytes + 1 - total);
+        const bytesRead = fsImpl.readSync(fd, buffer, 0, length, null);
+        if (bytesRead === 0) break;
+        chunks.push(Buffer.from(buffer.subarray(0, bytesRead)));
+        total += bytesRead;
+      }
+      if (total > maxBytes) {
+        throw new Error(`${label} exceeds the ${maxBytes}-byte limit`);
+      }
+      return Buffer.concat(chunks, total).toString('utf8');
+    } finally {
+      if (fd !== undefined) fsImpl.closeSync(fd);
+    }
+  }
+
+  if (typeof fsImpl.statSync === 'function') {
+    const stat = fsImpl.statSync(filePath);
+    if (!stat.isFile() || stat.size > maxBytes) {
+      throw new Error(`${label} exceeds the ${maxBytes}-byte limit or is not a regular file`);
+    }
+  }
+  const content = fsImpl.readFileSync(filePath, 'utf8');
+  if (Buffer.byteLength(content, 'utf8') > maxBytes) {
+    throw new Error(`${label} exceeds the ${maxBytes}-byte limit`);
+  }
+  return content;
+}
+
+function readBoundedJson(fsMod, p, maxBytes, label) {
+  return JSON.parse(readBoundedText(fsMod, p, maxBytes, label));
+}
+
+function safeReadJson(fsMod, p, maxBytes = MAX_USER_CONFIG_BYTES) {
   try {
-    const raw = fsMod.readFileSync(p, 'utf8');
-    return JSON.parse(raw);
+    return readBoundedJson(fsMod, p, maxBytes, path.basename(p));
   } catch (_) {
     return null;
   }
@@ -37,11 +86,21 @@ function defaultTempName(filePath) {
 function writeJsonAtomic(fsMod, filePath, obj, deps = {}) {
   const dir = path.dirname(filePath);
   if (!fsMod.existsSync(dir)) {
-    fsMod.mkdirSync(dir, { recursive: true });
+    fsMod.mkdirSync(dir, { recursive: true, mode: 0o700 });
   }
   const tmp = deps.tempName ? deps.tempName(filePath) : defaultTempName(filePath);
-  fsMod.writeFileSync(tmp, JSON.stringify(obj, null, 2) + '\n');
-  fsMod.renameSync(tmp, filePath);
+  try {
+    if (typeof fsMod.chmodSync !== 'function') {
+      throw new Error('chmodSync is required to secure companion state files');
+    }
+    fsMod.writeFileSync(tmp, JSON.stringify(obj, null, 2) + '\n', { flag: 'wx', mode: 0o600 });
+    fsMod.chmodSync(tmp, 0o600);
+    fsMod.renameSync(tmp, filePath);
+    fsMod.chmodSync(filePath, 0o600);
+  } catch (err) {
+    try { if (fsMod.existsSync(tmp)) fsMod.unlinkSync(tmp); } catch (_) {}
+    throw err;
+  }
 }
 
 function archiveStale(fsMod, pidPath, readyPath, deps = {}) {
@@ -108,6 +167,10 @@ function statusFromRendererEvent(status, ev) {
   if (ev.currentFrame !== undefined) status.currentFrame = ev.currentFrame;
   if (ev.fps !== undefined) status.fps = ev.fps;
   if (ev.anchorFound !== undefined) status.anchorFound = ev.anchorFound;
+  if (ev.petAnchorFound !== undefined) status.petAnchorFound = ev.petAnchorFound;
+  if (ev.mainWindowFallbackAnchor !== undefined) status.mainWindowFallbackAnchor = ev.mainWindowFallbackAnchor;
+  if (ev.visualAnchorDiagnostic !== undefined) status.visualAnchorDiagnostic = ev.visualAnchorDiagnostic;
+  if (ev.timerPanelVisible !== undefined) status.timerPanelVisible = ev.timerPanelVisible;
   if (ev.windowVisible !== undefined) status.windowVisible = ev.windowVisible;
   if (ev.targetHeightRatio !== undefined) status.targetHeightRatio = ev.targetHeightRatio;
   if (ev.displayId !== undefined) status.displayId = ev.displayId;
@@ -128,7 +191,19 @@ function statusFromAdapterEvent(status, payload) {
 function defaultPrepareVisualConfig(d, petInfo) {
   try {
     const petDir = petInfo.petDir;
-    const petJson = JSON.parse(d.fs.readFileSync(path.join(petDir, 'pet.json'), 'utf8'));
+    let userConfig = null;
+    if (d.paths && d.paths.COMPANION_CONFIG_PATH && d.fs.existsSync(d.paths.COMPANION_CONFIG_PATH)) {
+      try {
+        userConfig = readBoundedJson(
+          d.fs, d.paths.COMPANION_CONFIG_PATH, MAX_USER_CONFIG_BYTES, 'companion-config.json'
+        );
+      } catch (err) {
+        return { failMsg: 'invalid companion-config.json: ' + err.message };
+      }
+    }
+    const petJson = JSON.parse(readBoundedText(
+      d.fs, path.join(petDir, 'pet.json'), MAX_PET_MANIFEST_BYTES, 'pet.json'
+    ));
     const expectedPetId = (petInfo && petInfo.provider === 'builtin') ? petInfo.petId : undefined;
     const manifestResult = parsePetManifest(petDir, petJson, expectedPetId);
     if (!manifestResult.valid || !manifestResult.pet) {
@@ -140,7 +215,9 @@ function defaultPrepareVisualConfig(d, petInfo) {
     let configResult = { valid: false, errors: [], clips: {}, render: {} };
     if (d.fs.existsSync(companionJsonPath)) {
       try {
-        companionJson = JSON.parse(d.fs.readFileSync(companionJsonPath, 'utf8'));
+        companionJson = JSON.parse(readBoundedText(
+          d.fs, companionJsonPath, MAX_COMPANION_CONFIG_BYTES, 'companion.json'
+        ));
         configResult = validateCompanionConfig(companionJson, petManifest.id, petDir);
       } catch (err) {
         return { failMsg: 'invalid companion.json: ' + err.message };
@@ -151,7 +228,7 @@ function defaultPrepareVisualConfig(d, petInfo) {
     }
 
     const binPath = d.paths.COMPANION_BINARY;
-    d.compileSwiftRenderer(binPath);
+    if (!d.fs.existsSync(binPath)) d.compileSwiftRenderer(binPath);
 
     let atlasRows = 9;
     try {
@@ -178,10 +255,6 @@ function defaultPrepareVisualConfig(d, petInfo) {
     const resolvedClips = resolveClipFrames(configResult, petManifest, atlasRows, petDir, binPath);
     const safeRender = getSafeRenderSettings(companionJson);
 
-    let userConfig = null;
-    if (d.paths && d.paths.COMPANION_CONFIG_PATH) {
-      userConfig = safeReadJson(d.fs, d.paths.COMPANION_CONFIG_PATH);
-    }
     let targetHeightRatio = safeRender.targetHeightRatio;
     let userRatioOverride = false;
     if (userConfig && userConfig.render && typeof userConfig.render.restHeightRatio === 'number' && Number.isFinite(userConfig.render.restHeightRatio) && userConfig.render.restHeightRatio >= 0.4 && userConfig.render.restHeightRatio <= 0.9) {
@@ -989,8 +1062,12 @@ module.exports = {
   stopManager,
   statusManager,
   createDeps,
+  statusFromRendererEvent,
   writeJsonAtomic,
   safeReadJson,
+  readBoundedText,
+  readBoundedJson,
+  MAX_USER_CONFIG_BYTES,
   archiveStale,
   defaultPrepareVisualConfig,
 };

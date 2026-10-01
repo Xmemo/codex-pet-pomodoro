@@ -17,7 +17,6 @@ jobs:
   test:
     runs-on: macos-latest
     timeout-minutes: 20
-
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
@@ -32,11 +31,8 @@ jobs:
       - name: Install Python test dependency
         run: python -m pip install pytest==8.4.2
 
-      - name: Run Node tests
+      - name: Run Node test suite
         env:
-          # GitHub hosted macOS runners do not provide a stable WindowServer.
-          # Only the display-dependent anchor test is skipped; local macOS
-          # acceptance remains a required release gate.
           CODEX_SKIP_DISPLAY_TESTS: "1"
         run: CODEX_TIMER_OVERLAY_HOME="$(mktemp -d)" node --test tests/*.test.js
 
@@ -44,13 +40,20 @@ jobs:
         run: PYTHONPATH=. python -m pytest -q
 
       - name: Typecheck Swift code
-        run: xcrun swiftc -typecheck src/companion_renderer.swift src/timer_panel.swift
+        run: |
+          xcrun swiftc -typecheck src/companion_renderer.swift src/timer_panel.swift
+          xcrun swiftc -typecheck src/codex_pet_supervisor.swift
 
       - name: Lint shell scripts
-        run: zsh -n scripts/install.sh scripts/uninstall.sh scripts/bootstrap.sh scripts/package-release.sh
+        run: zsh -n scripts/bootstrap.sh scripts/install.sh scripts/uninstall.sh scripts/package-release.sh
 
-      - name: Lint LaunchAgent plists
-        run: plutil -lint packaging/io.github.codex-ultradian-rhythm.plist packaging/io.github.codex-pet-companion.plist
+      - name: Lint property lists
+        run: plutil -lint packaging/io.github.codex-pet-companion.plist packaging/companion-renderer-Info.plist
 
       - name: Check patch whitespace
         run: git diff --check HEAD^ HEAD || git diff --check
+
+      - name: Package release and verify checksum
+        run: |
+          PACKAGE_RELEASE_REF=HEAD ./scripts/package-release.sh v0.1.0
+          (cd dist && shasum -a 256 -c SHA256SUMS)

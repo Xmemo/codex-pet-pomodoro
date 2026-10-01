@@ -22,24 +22,34 @@ const COMMAND = `/usr/bin/node ${WORKER_ARG0} --worker --ready-token tok`;
 
 function makeFakeFs(initial = {}) {
   const store = new Map();
+  const modes = new Map();
   for (const [k, v] of Object.entries(initial)) {
     store.set(path.resolve(k), typeof v === 'string' ? v : JSON.stringify(v));
   }
   const norm = (p) => path.resolve(p);
   return {
     _store: store,
+    _modes: modes,
     existsSync: (p) => store.has(norm(p)),
     readFileSync: (p) => {
       const k = norm(p);
       if (!store.has(k)) throw new Error('ENOENT: ' + p);
       return store.get(k);
     },
-    writeFileSync: (p, data) => { store.set(norm(p), typeof data === 'string' ? data : JSON.stringify(data)); },
+    writeFileSync: (p, data, options = {}) => {
+      store.set(norm(p), typeof data === 'string' ? data : JSON.stringify(data));
+      if (options.mode !== undefined) modes.set(norm(p), options.mode);
+    },
+    chmodSync: (p, mode) => { modes.set(norm(p), mode); },
     renameSync: (a, b) => {
       const ka = norm(a), kb = norm(b);
       if (!store.has(ka)) throw new Error('ENOENT rename: ' + a);
       store.set(kb, store.get(ka));
       store.delete(ka);
+      if (modes.has(ka)) {
+        modes.set(kb, modes.get(ka));
+        modes.delete(ka);
+      }
     },
     unlinkSync: (p) => {
       const k = norm(p);
@@ -219,6 +229,26 @@ test('L003: runWorker writes worker PID, never renderer PID', async () => {
   assert.notStrictEqual(identity.pid, 9999);
 });
 
+test('L003b: atomic readiness and PID JSON writes enforce mode 0600 under permissive umask', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'companion-private-json-'));
+  const filePath = path.join(root, 'identity.json');
+  fs.writeFileSync(filePath, '{"old":true}', { mode: 0o644 });
+  fs.chmodSync(filePath, 0o644);
+  const previousUmask = process.umask(0);
+  try {
+    lifecycle.writeJsonAtomic(fs, filePath, { ready: true, pid: 42 });
+  } finally {
+    process.umask(previousUmask);
+  }
+  try {
+    assert.deepStrictEqual(JSON.parse(fs.readFileSync(filePath, 'utf8')), { ready: true, pid: 42 });
+    assert.strictEqual(fs.statSync(filePath).mode & 0o777, 0o600);
+    assert.deepStrictEqual(fs.readdirSync(root), ['identity.json']);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('L004: runWorker fails when daemon socket is missing (no timer state/socket mutation)', async () => {
   const fakeFs = makeFakeFs({ '/state/daemon.sock': 'x' });
   const deps = baseDeps({ fs: fakeFs, socketPath: '/state/missing.sock' });
@@ -308,6 +338,42 @@ test('L006c: defaultPrepareVisualConfig fails hard on malformed companion.json',
       execFileSync: () => JSON.stringify({ valid: true, hasAlpha: true, width: 1536, height: 1872 }),
     }, { petDir: pkg.petDir });
     assert.ok(result.failMsg.includes('companion.json'));
+  } finally {
+    pkg.cleanup();
+  }
+});
+
+test('L006c: defaultPrepareVisualConfig rejects oversized companion.json before parsing', () => {
+  const pkg = makeTempPetPackage();
+  try {
+    fs.writeFileSync(path.join(pkg.petDir, 'companion.json'), Buffer.alloc(1024 * 1024 + 1, 0x20));
+    const result = lifecycle.defaultPrepareVisualConfig({
+      fs,
+      paths: { COMPANION_BINARY: path.join(pkg.root, 'renderer') },
+      compileSwiftRenderer: () => {},
+      execFileSync: () => { throw new Error('must not inspect assets for oversized config'); },
+    }, { petDir: pkg.petDir });
+    assert.match(result.failMsg, /companion\.json.*byte limit/i);
+  } finally {
+    pkg.cleanup();
+  }
+});
+
+test('L006d: defaultPrepareVisualConfig rejects oversized companion-config.json before parsing', () => {
+  const pkg = makeTempPetPackage();
+  const userConfigPath = path.join(pkg.root, 'companion-config.json');
+  try {
+    fs.writeFileSync(userConfigPath, Buffer.alloc(lifecycle.MAX_USER_CONFIG_BYTES + 1, 0x20));
+    const result = lifecycle.defaultPrepareVisualConfig({
+      fs,
+      paths: {
+        COMPANION_BINARY: path.join(pkg.root, 'renderer'),
+        COMPANION_CONFIG_PATH: userConfigPath,
+      },
+      compileSwiftRenderer: () => {},
+      execFileSync: () => { throw new Error('must not inspect assets for oversized user config'); },
+    }, { petDir: pkg.petDir });
+    assert.match(result.failMsg, /invalid companion-config\.json.*byte limit/i);
   } finally {
     pkg.cleanup();
   }
@@ -1378,6 +1444,21 @@ test('Batch C: Status contract and canonical config write failure during candida
     assert.strictEqual(st.targetHeightRatio, 0.72);
     assert.strictEqual(st.displayId, null);
     assert.strictEqual(st.pendingPetId, null);
+    assert.strictEqual(st.petAnchorFound, null);
+    assert.strictEqual(st.visualAnchorDiagnostic, null);
+    assert.strictEqual(st.timerPanelVisible, null);
+
+    const lifecycle = require('../src/companion/worker-lifecycle.js');
+    lifecycle.statusFromRendererEvent(st, {
+      petAnchorFound: false,
+      mainWindowFallbackAnchor: true,
+      visualAnchorDiagnostic: 'voice-host-geometry-estimate',
+      timerPanelVisible: false,
+    });
+    assert.strictEqual(st.petAnchorFound, false);
+    assert.strictEqual(st.mainWindowFallbackAnchor, true);
+    assert.strictEqual(st.visualAnchorDiagnostic, 'voice-host-geometry-estimate');
+    assert.strictEqual(st.timerPanelVisible, false);
 
     const formatted = statusMod.formatHuman({
       ...st,
