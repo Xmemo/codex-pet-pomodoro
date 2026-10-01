@@ -1,10 +1,10 @@
 # Scientific Basis and Claim Boundaries
 
-## Human Life × Ultradian Rhythm × Pomodoro
+## Ultradian Rhythm × Pomodoro × Dry-Eye Prevention Reminder
 
 Pet Pomodoro starts with Huberman Lab's public explanation of focus bouts and deliberate recovery: work is better organized as bounded periods of focus followed by intentional decompression, rather than as an indefinitely extendable line. We combine that idea with the execution model of the Pomodoro Technique through three selectable rhythms: `25/5`, `50/10`, and `90/20`.
 
-"Human Life" means that the tool should adapt to human attention, fatigue, and recovery needs instead of asking people to work like software. Pet Pomodoro is a **research-informed, optimized Pomodoro timer**. It is not a biological-rhythm measurement device or a clinically validated health intervention.
+The eye component is a screen-break habit cue intended to support dry-eye awareness, not a clinically validated prevention or treatment. Pet Pomodoro is a **research-informed, optimized Pomodoro timer**. It is not a biological-rhythm measurement device or a clinically validated health intervention.
 
 ## Huberman Lab and the 90-Minute Option
 

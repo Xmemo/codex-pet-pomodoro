@@ -5,9 +5,9 @@
 
 [简体中文](README.zh-CN.md) | English
 
-**Human Life × Ultradian Rhythm × Pomodoro, with your Codex pet**
+**Ultradian Rhythm × Pomodoro × Dry-Eye Prevention Reminders, with your Codex pet**
 
-A research-informed Pomodoro timer for macOS, inspired by Huberman Lab's discussion of ultradian rhythms. It lives beside your Codex pet during focus and turns that same pet into a prominent, calm break cue when it is time to pause.
+A research-informed Pomodoro timer for macOS, inspired by Huberman Lab's discussion of ultradian rhythms. It lives beside your Codex pet during focus and turns that same pet into a prominent, calm break cue when it is time to pause. The dry-eye reminder is a screen-break habit cue, not a clinically validated prevention or treatment.
 
 ## Product Visuals
 
