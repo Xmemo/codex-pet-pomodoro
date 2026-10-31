@@ -152,7 +152,7 @@ codex-pet-companion preview --pet example-pet --state rest
 codex '阅读 https://github.com/Xmemo/codex-pet-pomodoro/blob/main/INSTALL_WITH_CODEX.md 并严格按安装契约执行。仅可安装 v0.1.0 之后、且压缩包同时通过 SHA256 与本仓库、发布工作流、精确 tag 的 GitHub attestation 验证的版本。若不存在符合条件的版本就停止。保留正常审批，不使用 sudo，也不绕过审批。'
 ```
 
-Codex 会对需要审批的操作正常请求确认。`v0.1.1` 已发布并带有可验证的 attestation；`v0.1.0` 早于发布来源证明机制，不应通过这条验证安装流程安装。
+Codex 会对需要审批的操作正常请求确认。`v0.1.2` 已发布并带有可验证的 attestation；`v0.1.0` 早于发布来源证明机制，不应通过这条验证安装流程安装。
 
 ---
 

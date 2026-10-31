@@ -152,7 +152,7 @@ Run this in Terminal to open an interactive Codex session with the installation 
 codex 'Read https://github.com/Xmemo/codex-pet-pomodoro/blob/main/INSTALL_WITH_CODEX.md and follow its installation contract. Install only from a release newer than v0.1.0 whose archive passes both SHA256 and GitHub attestation verification for this repository, release workflow, and exact tag. If no such release exists, stop. Preserve normal approval prompts; never use sudo or bypass approvals.'
 ```
 
-Codex will ask before actions that need approval. The `v0.1.1` release is attested and available; `v0.1.0` predates release provenance and must not be installed through this verified flow.
+Codex will ask before actions that need approval. The `v0.1.2` release is attested and available; `v0.1.0` predates release provenance and must not be installed through this verified flow.
 
 ---
 

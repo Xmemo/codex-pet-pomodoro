@@ -117,7 +117,7 @@ function cleanTestEnv(env) {
 
 // Reusable test helper
 function runBootstrapTest({
-  version = 'v0.1.1',
+  version = 'v0.1.2',
   versionArg = null,
   tarballFiles = null, // array of { name, content, type: 'file'|'symlink', target, outsideRoot }
   customChecksumContent = null,
