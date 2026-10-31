@@ -7,8 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-10-31
+
+### Added
+- Add the 20-20-10 eye-break cue during active focus: the pet enlarges every 20 active minutes for 20 seconds and prompts a distant gaze and gentle complete blinks.
+
 ### Fixed
 - Keep the tomato timer anchored to the pet when Codex uses a wide voice-host window, including after restarting Codex.
+- Resolve built-in pet spritesheets when Codex packages them under hashed WebP filenames.
+
+### Changed
+- Clarify the evidence and claim boundaries for ultradian rhythms and eye-break cues in the English and Chinese READMEs.
 
 ## [0.1.1] - 2026-09-26
 
