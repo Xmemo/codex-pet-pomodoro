@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Show static eye-rest, optional hydration, and gentle-movement prompts during `50/10` and `90/20` recovery screens; keep the independent 20-minute eye cue unchanged.
+
 ### Fixed
 - Keep the tomato timer anchored to the pet when Codex uses a wide voice-host window, including after restarting Codex.
 

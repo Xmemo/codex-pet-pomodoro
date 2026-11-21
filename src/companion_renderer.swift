@@ -558,6 +558,8 @@ class CompanionWindow: NSPanel {
     var reminderHoldSeconds: Double = 2
     var reminderGeneration = 0
     var eyeRestTextLayer: CATextLayer?
+    var recoveryPromptLayer: CATextLayer?
+    var recoveryPromptActive: Bool = false
     var isTakeover: Bool = false
 
     var testTransientAnchor: Bool = false
@@ -569,6 +571,7 @@ class CompanionWindow: NSPanel {
     var testPanelFlash: Bool = false
     var testPanelErrorPreservation: Bool = false
     var testMidpoint: Bool = false
+    var testRecoveryPrompts: Bool = false
     var testActivateTakeover: Bool = false
     var testTakeoverAtlasPreference: Bool = false
     var testIdleProgression: Bool = false
@@ -653,6 +656,40 @@ class CompanionWindow: NSPanel {
         reminder.isHidden = true
         rootLayer.addSublayer(reminder)
         eyeRestTextLayer = reminder
+
+        let recoveryPrompt = CATextLayer()
+        recoveryPrompt.string = "休息一下\n远眺约 6 米 20 秒 · 轻柔完整眨眼 10 次\n按需喝水 · 起身走动或舒展肩颈"
+        recoveryPrompt.fontSize = 18
+        recoveryPrompt.alignmentMode = .center
+        recoveryPrompt.isWrapped = true
+        recoveryPrompt.foregroundColor = NSColor.white.cgColor
+        recoveryPrompt.backgroundColor = NSColor.black.withAlphaComponent(0.78).cgColor
+        recoveryPrompt.cornerRadius = 10
+        recoveryPrompt.contentsScale = currentTargetScreen().backingScaleFactor
+        recoveryPrompt.isHidden = true
+        rootLayer.addSublayer(recoveryPrompt)
+        recoveryPromptLayer = recoveryPrompt
+    }
+
+    func updateTimerState(_ event: [String: Any]) {
+        guard let state = event["state"] as? [String: Any] else {
+            recoveryPromptActive = false
+            updateReminderLayerVisibility()
+            return
+        }
+
+        let status = state["status"] as? String ?? ""
+        let phase = state["phase"] as? String ?? ""
+        let preset = state["preset"] as? String ?? ""
+        recoveryPromptActive = ["running", "paused"].contains(status) &&
+            phase == "rest" && ["flow", "deep"].contains(preset)
+        updateReminderLayerVisibility()
+    }
+
+    func updateReminderLayerVisibility() {
+        let isResting = engine.currentState == .resting
+        eyeRestTextLayer?.isHidden = !(isMidpoint && reminderHoldSeconds == 20 && isResting)
+        recoveryPromptLayer?.isHidden = !(recoveryPromptActive && isResting && !isMidpoint)
     }
 
     // Calm idle blink timers
@@ -1067,7 +1104,13 @@ class CompanionWindow: NSPanel {
         eyeRestTextLayer?.frame = CGRect(x: visible.minX - screen.frame.minX + 16,
             y: visible.minY - screen.frame.minY + 16,
             width: max(1, visible.width - 32), height: 64)
-        eyeRestTextLayer?.isHidden = !(isMidpoint && reminderHoldSeconds == 20 && engine.currentState == .resting)
+        let promptWidth = min(760, max(1, visible.width - 32))
+        recoveryPromptLayer?.frame = CGRect(
+            x: visible.midX - screen.frame.minX - promptWidth / 2,
+            y: visible.minY - screen.frame.minY + 8,
+            width: promptWidth,
+            height: 88)
+        updateReminderLayerVisibility()
 
         engine.targetHeightRatio = targetHeightRatio
         if let num = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID {
@@ -1413,12 +1456,15 @@ class CompanionWindow: NSPanel {
                 stopAnimationTimer()
                 startAnimationTimer()
             }
+            updateReminderLayerVisibility()
             syncWindowVisibility()
             emitStatusIfChanged()
 
         case "companion.deactivate":
             reminderGeneration += 1
             eyeRestTextLayer?.isHidden = true
+            recoveryPromptActive = false
+            recoveryPromptLayer?.isHidden = true
             if let forceState = evt.rawJson["state"] as? String, forceState == "resting" {
                 isTakeover = true
                 isMidpoint = false
@@ -1618,7 +1664,7 @@ class RendererDelegate: NSObject, NSApplicationDelegate {
             window.testMultiDisplay || window.testAnchorFallback || window.testFullscreenGeometry ||
             window.testEasing || window.testInterruptionContinuity || window.testNeutralFallback ||
             window.testPanelGeometry || window.testPanelFocus || window.testPanelFlash ||
-            window.testMidpoint || window.testActivateTakeover || window.testTakeoverAtlasPreference ||
+            window.testMidpoint || window.testRecoveryPrompts || window.testActivateTakeover || window.testTakeoverAtlasPreference ||
             window.testTrustedPetAnchor || window.testIdleProgression || window.testVisualMatch ||
             window.testVoiceGeometryAnchor
         ) {
@@ -1649,6 +1695,7 @@ class RendererDelegate: NSObject, NSApplicationDelegate {
         if window.testPanelFlash { runPanelFlashTest(); return }
         if window.testPanelErrorPreservation { runPanelErrorPreservationTest(); return }
         if window.testMidpoint { runMidpointTest(); return }
+        if window.testRecoveryPrompts { runRecoveryPromptsTest(); return }
         if window.testActivateTakeover { runActivateTakeoverTest(); return }
         if window.testTakeoverAtlasPreference { runTakeoverAtlasPreferenceTest(); return }
         if window.testTrustedPetAnchor { runTrustedPetAnchorTest(); return }
@@ -1717,6 +1764,9 @@ class RendererDelegate: NSObject, NSApplicationDelegate {
                 DispatchQueue.main.async {
                     guard let self = self else { return }
                     if let eventName = json["event"] as? String {
+                        if eventName == "timer.state" {
+                            self.window.updateTimerState(json)
+                        }
                         if eventName == "timer.state" || eventName == "panel.preferences" || eventName == "timer.error" {
                             if let dataStr = try? JSONSerialization.data(withJSONObject: json, options: []),
                                let jsonString = String(data: dataStr, encoding: .utf8) {
@@ -2541,6 +2591,44 @@ class RendererDelegate: NSObject, NSApplicationDelegate {
         exit(0)
     }
 
+    func runRecoveryPromptsTest() {
+        window.statusEmissionEnabled = false
+        window.engine.currentState = .resting
+
+        func timerState(_ preset: String, _ status: String, _ phase: String) -> [String: Any] {
+            ["state": ["preset": preset, "status": status, "phase": phase]]
+        }
+
+        window.updateTimerState(timerState("flow", "running", "rest"))
+        window.updateGeometryAndLayers()
+        let flowVisible = window.recoveryPromptActive && window.recoveryPromptLayer?.isHidden == false
+        let copy = window.recoveryPromptLayer?.string as? String ?? ""
+        let copyHasAllPrompts = copy.contains("远眺") && copy.contains("喝水") && copy.contains("走动")
+
+        window.updateTimerState(timerState("deep", "paused", "rest"))
+        window.updateGeometryAndLayers()
+        let pausedRestVisible = window.recoveryPromptActive && window.recoveryPromptLayer?.isHidden == false
+
+        window.updateTimerState(timerState("start", "running", "rest"))
+        window.updateGeometryAndLayers()
+        let shortRestHidden = !window.recoveryPromptActive && window.recoveryPromptLayer?.isHidden == true
+
+        window.updateTimerState(timerState("flow", "running", "work"))
+        window.updateGeometryAndLayers()
+        let workHidden = !window.recoveryPromptActive && window.recoveryPromptLayer?.isHidden == true
+
+        window.reminderHoldSeconds = 20
+        window.isMidpoint = true
+        window.updateGeometryAndLayers()
+        let independentEyeCueVisible = window.eyeRestTextLayer?.isHidden == false &&
+            window.recoveryPromptLayer?.isHidden == true
+
+        let valid = flowVisible && pausedRestVisible && shortRestHidden && workHidden &&
+            independentEyeCueVisible && copyHasAllPrompts
+        print("{\"valid\": \(valid), \"flowVisible\": \(flowVisible), \"pausedRestVisible\": \(pausedRestVisible), \"shortRestHidden\": \(shortRestHidden), \"workHidden\": \(workHidden), \"independentEyeCueVisible\": \(independentEyeCueVisible), \"copyHasAllPrompts\": \(copyHasAllPrompts)}")
+        exit(valid ? 0 : 1)
+    }
+
     func runActivateTakeoverTest() {
         window.statusEmissionEnabled = false
         var results: [String: Any] = [:]
@@ -3240,6 +3328,8 @@ struct RendererApp {
                 win.testPanelErrorPreservation = true
             case "--test-midpoint":
                 win.testMidpoint = true
+            case "--test-recovery-prompts":
+                win.testRecoveryPrompts = true
             case "--test-activate-takeover":
                 win.testActivateTakeover = true
             case "--test-takeover-atlas-preference":

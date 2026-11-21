@@ -328,6 +328,29 @@ test('T004 midpoint: --test-midpoint validates midpoint enter→rest flow and ac
   }
 });
 
+test('recovery prompts show for 50/90-minute rests without replacing independent eye cues', async (t) => {
+  if (!hasXcrun) {
+    t.skip('xcrun not available');
+    return;
+  }
+  const tempBin = path.join(os.tmpdir(), `companion-test-${Date.now()}`, 'companion_renderer');
+  compileSwiftRenderer(tempBin);
+
+  try {
+    const result = execFileSync(tempBin, ['--test-recovery-prompts'], { encoding: 'utf8' });
+    const parsed = JSON.parse(result.trim());
+    assert.strictEqual(parsed.valid, true, 'Recovery prompt behavior validation failed');
+    assert.strictEqual(parsed.flowVisible, true, 'Flow 50/10 rest should show recovery prompts');
+    assert.strictEqual(parsed.pausedRestVisible, true, 'Paused Deep 90/20 rest should keep prompts visible');
+    assert.strictEqual(parsed.shortRestHidden, true, 'Start 25/5 rest should not show recovery prompts');
+    assert.strictEqual(parsed.workHidden, true, 'Work phase should not show recovery prompts');
+    assert.strictEqual(parsed.independentEyeCueVisible, true, 'Independent 20-minute eye cue should remain available');
+    assert.strictEqual(parsed.copyHasAllPrompts, true, 'Recovery text should include eye care, hydration, and movement');
+  } finally {
+    try { fs.rmSync(path.dirname(tempBin), { recursive: true, force: true }); } catch (_) {}
+  }
+});
+
 test('T004 activate takeover: --test-activate-takeover validates normal activate enters resting loop', async (t) => {
   if (!hasXcrun) {
     t.skip('xcrun not available');

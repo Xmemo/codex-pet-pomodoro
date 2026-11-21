@@ -39,7 +39,7 @@ The companion does not request or use Screen Recording or Accessibility permissi
 
 1. Choose `25/5`, `50/10`, or `90/20`.
 2. Work with the compact tomato dial beside your Codex pet.
-3. At rest time, the pet grows into a fullscreen, low-motion idle presence.
+3. At `50/10` and `90/20` recovery time, the pet grows into a fullscreen, low-motion idle presence with gentle prompts to look away, blink comfortably, drink if needed, and move or stretch as comfortable.
 4. Let the visual transition interrupt continued work and create a real recovery boundary.
 5. Keep local session history for later reflection or AI-assisted pattern analysis.
 
@@ -64,11 +64,13 @@ Pet Pomodoro also includes a `20-20-10` screen-break cue: after each 20 minutes 
 
 This feature is intended as a **screen-break and dry-eye-awareness prompt**, not a proven dry-eye prevention method. Digital-screen viewing can be associated with blink changes, but current evidence for reminder-based interventions is limited and mixed; a small study of intensive app-guided blink training in people already diagnosed with dry eye does not validate this product's much less frequent cue. The exact 20-minute / 20-second / 10-blink combination has not been clinically tested, and Pet Pomodoro does not claim to prevent or treat dry eye, digital eye strain, or any medical condition. See [Scientific Basis and Claim Boundaries](docs/research/scientific-basis.md) for detailed evidence and limitations. ([TFOS Lifestyle report](https://doi.org/10.1016/j.jtos.2023.04.004); [Xu et al., 2025](https://doi.org/10.1038/s41746-025-02053-8); [Johnson & Rosenfield, 2023](https://doi.org/10.1097/OPX.0000000000001971))
 
+During the longer `50/10` and `90/20` recovery screens, a separate static message also suggests looking away, blinking gently, drinking water if needed, and standing or stretching as comfortable. These are optional general reminders, not medical, hydration, or exercise prescriptions. The independent 20-minute eye cue remains active; the additional recovery message does not replace or reset it.
+
 ## Why This Pomodoro Is Different
 
 A standard Pomodoro timer gives you a work countdown and a break countdown. Pet Pomodoro keeps the familiar `25/5` option, adds `50/10` and `90/20` as optional rhythms inspired by Huberman Lab's ultradian framing, and brings the timer into the Codex pet experience. The intervals are personal starting points, not a claim that every brain follows one exact clock.
 
-During focus, the compact tomato dial stays beside the native pet. Unlike a timer that only changes the countdown, Pet Pomodoro also uses the pet for a `20-20-10` eye-break cue and for longer recovery periods. The eye cue is a dry-eye-awareness habit reminder, not a proven prevention or treatment, and the app does not monitor eye behavior. The same pet enlarges into a calm, low-motion presence at these cues, making the pause more visible without locking the Mac or taking control of the mouse. Local session records can be exported for user-directed AI analysis; the runtime has no cloud dependency, telemetry, or hosted dashboard.
+During focus, the compact tomato dial stays beside the native pet. Unlike a timer that only changes the countdown, Pet Pomodoro also uses the pet for an independent `20-20-10` eye-break cue and for longer recovery periods. During `50/10` and `90/20` recovery, the enlarged pet carries static prompts for eye rest, optional water, and gentle movement. The eye cue is a dry-eye-awareness habit reminder, not a proven prevention or treatment, and the app does not monitor eye behavior. The same pet enlarges into a calm, low-motion presence at these cues, making the pause more visible without locking the Mac or taking control of the mouse. Local session records can be exported for user-directed AI analysis; the runtime has no cloud dependency, telemetry, or hosted dashboard.
 
 ---
 
