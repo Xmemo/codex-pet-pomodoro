@@ -199,6 +199,8 @@ class TimerPanelController: NSObject {
     // Tracking for tests
     var isRunningTest: Bool = false
     var recordedCommands: [String] = []
+    var recordedGoals: [String] = []
+    var goalPromptProviderForTesting: (() -> String?)?
 
     override init() {
         super.init()
@@ -495,12 +497,16 @@ class TimerPanelController: NSObject {
             fflush(stdout)
             collapsePanel()
         } else if currentStatus == "idle" || currentStatus == "completed" {
+            guard let goal = requestFocusGoal() else { return }
             recordedCommands.append("start")
+            if isRunningTest {
+                recordedGoals.append(goal)
+            }
             let json: [String: Any] = [
                 "kind": "command",
                 "command": "start",
                 "preset": selectedPreset,
-                "intentionText": "Focus session",
+                "intentionText": goal,
                 "replace": false
             ]
             if let data = try? JSONSerialization.data(withJSONObject: json, options: []),
@@ -510,6 +516,37 @@ class TimerPanelController: NSObject {
             }
             collapsePanel()
         }
+    }
+
+    private func requestFocusGoal() -> String? {
+        if let provider = goalPromptProviderForTesting {
+            guard let goal = provider()?.trimmingCharacters(in: .whitespacesAndNewlines), !goal.isEmpty else {
+                return nil
+            }
+            return goal
+        }
+
+        let alert = NSAlert()
+        alert.messageText = "本轮要交付什么？"
+        alert.informativeText = "写一个可以检查的具体结果。填写目标后才会开始计时。"
+        alert.alertStyle = .informational
+
+        let goalField = NSTextField(frame: NSRect(x: 0, y: 0, width: 320, height: 24))
+        goalField.placeholderString = "例如：完成草稿并通过检查"
+        goalField.setAccessibilityLabel("本轮专注目标")
+        alert.accessoryView = goalField
+        alert.addButton(withTitle: "开始计时")
+        alert.addButton(withTitle: "取消")
+        alert.window.initialFirstResponder = goalField
+
+        while alert.runModal() == .alertFirstButtonReturn {
+            let goal = goalField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !goal.isEmpty {
+                return goal
+            }
+            alert.informativeText = "请填写一个具体目标；目标留空时不会启动计时。"
+        }
+        return nil
     }
 
     @objc func pauseClicked() {
@@ -819,9 +856,16 @@ class TimerPanelController: NSObject {
             exit(1)
         }
 
-        // 5. Assert performClick on enabled controls invokes expected local action path & command recorder
-        // A) Play from idle -> "start" command & collapse
+        // 5. Starting requires a concrete goal; cancel/blank must not start.
         recordedCommands.removeAll()
+        recordedGoals.removeAll()
+        let promptResponses: [String?] = [nil, " \n ", "Write a parser regression test", "Review the release checklist"]
+        var promptCount = 0
+        goalPromptProviderForTesting = {
+            defer { promptCount += 1 }
+            guard promptCount < promptResponses.count else { return nil }
+            return promptResponses[promptCount]
+        }
         currentStatus = "idle"
         expandPanel()
         guard playBtn.isEnabled else {
@@ -829,14 +873,37 @@ class TimerPanelController: NSObject {
             exit(1)
         }
         playBtn.performClick(nil)
+        guard recordedCommands.isEmpty && isExpanded else {
+            print("FAIL: cancelling goal prompt started or collapsed the panel")
+            exit(1)
+        }
+        playBtn.performClick(nil)
+        guard recordedCommands.isEmpty && isExpanded else {
+            print("FAIL: blank goal started or collapsed the panel")
+            exit(1)
+        }
+        playBtn.performClick(nil)
         guard recordedCommands.last == "start" else {
             print("FAIL: playBtn in idle did not record start command (recorded: \(recordedCommands))")
+            exit(1)
+        }
+        guard recordedGoals.last == "Write a parser regression test" else {
+            print("FAIL: playBtn did not preserve the entered goal (recorded: \(recordedGoals))")
             exit(1)
         }
         guard !isExpanded else {
             print("FAIL: playBtn click did not collapse panel")
             exit(1)
         }
+
+        currentStatus = "completed"
+        expandPanel()
+        playBtn.performClick(nil)
+        guard recordedGoals.last == "Review the release checklist" else {
+            print("FAIL: completed-cycle start did not ask for a fresh goal")
+            exit(1)
+        }
+        let promptCountBeforeResume = promptCount
 
         // B) Pause from running -> "pause" command & collapse
         recordedCommands.removeAll()
@@ -868,6 +935,10 @@ class TimerPanelController: NSObject {
         playBtn.performClick(nil)
         guard recordedCommands.last == "resume" else {
             print("FAIL: playBtn in paused did not record resume command (recorded: \(recordedCommands))")
+            exit(1)
+        }
+        guard promptCount == promptCountBeforeResume else {
+            print("FAIL: resuming a paused cycle asked for a new goal")
             exit(1)
         }
         guard !isExpanded else {

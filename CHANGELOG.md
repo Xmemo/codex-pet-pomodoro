@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Show static eye-rest, optional hydration, and gentle-movement prompts during `50/10` and `90/20` recovery screens; keep the independent 20-minute eye cue unchanged.
+
+### Fixed
+- Require a specific, non-empty goal before starting a focus cycle; do not substitute a generic goal when repeating a legacy cycle without one.
+
 ## [0.1.2] - 2026-10-31
 
 ### Added

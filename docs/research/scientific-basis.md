@@ -44,6 +44,7 @@ Relevant findings:
 Product mapping and claim boundary:
 
 - The current product cue appears after each 20 minutes of active timer focus, enlarges the pet for 20 seconds, and suggests looking about 6 metres away and making ten slow, gentle, complete blinks. Paused time is excluded; the work countdown continues.
+- The `50/10` and `90/20` recovery screens also show static, optional prompts for eye rest, drinking water if needed, and gentle movement. These are generic reminders, not individualized hydration or exercise guidance; the exact prompt bundle has not been tested as a health intervention.
 - The 20-minute / 20-second / ten-blink combination has not been directly tested in a clinical study. The software does not detect eye behavior, confirm a distance gaze, or monitor screen use outside an active timer session.
 - Defensible wording is “eye-care reminder,” “screen-break cue,” or “dry-eye awareness prompt.” Do not claim that the software prevents or treats dry eye or digital eye strain. The software itself has not undergone a clinical trial.
 
