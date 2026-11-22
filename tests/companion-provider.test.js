@@ -221,6 +221,85 @@ test('ASAR bounds & unsafe numeric offset checks', async (t) => {
   });
 });
 
+test('built-in pets resolve hashed WebP names through the app-initial asset map', async (t) => {
+  await t.test('maps the pet id to a bounded ASAR WebP entry and extracts it', () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hashed-pet-test-'));
+    try {
+      const atlas = createSyntheticVP8LWebP(1536, 2288);
+      const bundle = Buffer.from(
+        'var J7i;function getRocky(){return J7i??(J7i=new URL(`rockyhash.webp`,import.meta.url).href)};var pets={rocky:J7i};',
+        'utf8'
+      );
+      const asarPath = path.join(tempDir, 'app.asar');
+      fs.writeFileSync(asarPath, createSyntheticAsarBuffer({
+        'webview/assets/rockyhash.webp': atlas,
+        'webview/assets/app-initial-abcd1234.js': bundle,
+      }));
+
+      const res = resolveBuiltinPet('rocky', {
+        fs,
+        paths: {
+          COMPANION_BUILD_PATH: path.join(tempDir, 'companion-build'),
+          COMPANION_BUILTIN_CACHE_PATH: path.join(tempDir, 'companion-build/builtin-cache'),
+        },
+        appAsarPath: asarPath,
+      });
+
+      assert.strictEqual(res.available, true, res.error);
+      assert.deepStrictEqual(fs.readFileSync(res.spritesheetFullPath), atlas);
+      assert.strictEqual(JSON.parse(fs.readFileSync(path.join(res.petDir, 'pet.json'), 'utf8')).id, 'rocky');
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  await t.test('rejects unsafe and ambiguous bundle mappings', () => {
+    const assets = {
+      files: {
+        webview: { files: { assets: { files: {
+          'first.webp': { size: 400, offset: '0' },
+          'second.webp': { size: 400, offset: '400' },
+        } } } },
+      },
+    };
+    const unsafe = findBuiltinPetEntry(
+      assets, 'rocky', 1000, 100,
+      'var X;var pets={rocky:X};X=new URL(`../outside.webp`,import.meta.url).href;'
+    );
+    assert.strictEqual(unsafe.found, false);
+    assert.match(unsafe.error, /Unsafe built-in asset filename/);
+
+    const ambiguous = findBuiltinPetEntry(
+      assets, 'rocky', 1000, 100,
+      'var A,B;var pets={rocky:A,rocky:B};A=new URL(`first.webp`,import.meta.url).href;B=new URL(`second.webp`,import.meta.url).href;'
+    );
+    assert.strictEqual(ambiguous.found, false);
+    assert.match(ambiguous.error, /Multiple hashed WebP assets/);
+  });
+
+  await t.test('fails closed when the bundle has no pet asset mapping', () => {
+    const json = {
+      files: {
+        webview: {
+          files: {
+            assets: {
+              files: {
+                'unrelated.webp': { size: 400, offset: '0' },
+              },
+            },
+          },
+        },
+      },
+    };
+    const res = findBuiltinPetEntry(
+      json,
+      'rocky', 1000, 100, 'var pets={other:X};X=new URL(`unrelated.webp`,import.meta.url).href;'
+    );
+    assert.strictEqual(res.found, false);
+    assert.match(res.error, /No pet-to-asset mapping for "rocky"/);
+  });
+});
+
 test('Cache permissions, permission correction, hit mtime/ctime preservation, corrupt cache digest rebuild, and tmp cleanup', async (t) => {
   await t.test('cache files are 0600 and directories 0700', () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'perm-test-'));

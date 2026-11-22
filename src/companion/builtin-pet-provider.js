@@ -9,6 +9,9 @@ const STANDARD_CELL_HEIGHT = 208;
 const MAX_ATLAS_ROWS = 16;
 const MAX_JSON_HEADER_SIZE = 50 * 1024 * 1024; // 50 MB
 const MAX_ENTRY_SIZE = 64 * 1024 * 1024; // 64 MiB
+const MAX_ASSET_BUNDLE_SIZE = 32 * 1024 * 1024;
+const MAX_ASSET_BUNDLE_SCAN_SIZE = 64 * 1024 * 1024;
+const MAX_ASSET_BUNDLE_COUNT = 4;
 const MAX_CACHED_MANIFEST_SIZE = 64 * 1024;
 
 function validateWebPHeader(buffer, expectedFileSize = null) {
@@ -140,7 +143,92 @@ function parseAsarHeader(asarPath, fsMod = fs) {
   }
 }
 
-function findBuiltinPetEntry(headerJson, petId, asarFileSize, headerOffset) {
+function validateAsarEntry(entry, filename, asarFileSize, headerOffset, maxSize = MAX_ENTRY_SIZE) {
+  if (!entry || typeof entry !== 'object') {
+    return { found: false, error: `Invalid ASAR entry node for ${filename}` };
+  }
+
+  const size = Number(entry.size);
+  if (isNaN(size) || size <= 0 || !Number.isInteger(size)) {
+    return { found: false, error: `Invalid entry size for ${filename}: ${entry.size}` };
+  }
+  if (size > maxSize) {
+    const limit = maxSize === MAX_ENTRY_SIZE ? '64 MiB' : `${Math.floor(maxSize / (1024 * 1024))} MiB`;
+    return { found: false, error: `Entry ${filename} size (${size} bytes) exceeds maximum limit of ${limit}` };
+  }
+
+  let offset;
+  try {
+    offset = BigInt(entry.offset);
+  } catch (_) {
+    return { found: false, error: `Invalid entry offset for ${filename}: ${entry.offset}` };
+  }
+  if (offset < 0n) {
+    return { found: false, error: `Negative entry offset for ${filename}` };
+  }
+
+  const totalOffset = BigInt(headerOffset) + offset;
+  const endOffset = totalOffset + BigInt(size);
+  const maxSafeInt = BigInt(Number.MAX_SAFE_INTEGER);
+  if (endOffset > maxSafeInt) {
+    return { found: false, error: `Unsafe numeric offset above MAX_SAFE_INTEGER for ${filename}` };
+  }
+  if (endOffset > BigInt(asarFileSize)) {
+    return { found: false, error: `Entry ${filename} bounds [${totalOffset}, ${endOffset}] exceed ASAR file size ${asarFileSize}` };
+  }
+
+  return { found: true, filename, offset, size };
+}
+
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function findHashedPetAssetFilename(bundleText, petId) {
+  if (typeof bundleText !== 'string' || bundleText.length === 0) {
+    return { found: false, error: 'The built-in app asset bundle is empty or unreadable' };
+  }
+
+  const escapedId = escapeRegExp(petId);
+  const petMappingPattern = new RegExp(
+    `(?:^|[,{])\\s*(?:${escapedId}|"${escapedId}"|'${escapedId}')\\s*:\\s*([A-Za-z_$][\\w$]*)\\b`,
+    'g'
+  );
+  const petVariables = new Set([...bundleText.matchAll(petMappingPattern)].map(match => match[1]));
+  if (petVariables.size === 0) {
+    return { found: false, error: `No pet-to-asset mapping for "${petId}" in the built-in app bundle` };
+  }
+
+  const urlPattern = /\b([A-Za-z_$][\w$]*)\s*=\s*new URL\(\s*(?:`([^`]+)`|"([^"]+)"|'([^']+)')\s*,\s*import\.meta\.url\s*\)\.href/g;
+  const urlsByVariable = new Map();
+  for (const match of bundleText.matchAll(urlPattern)) {
+    const filename = match[2] || match[3] || match[4];
+    if (!filename || !filename.endsWith('.webp')) continue;
+    const filenames = urlsByVariable.get(match[1]) || new Set();
+    filenames.add(filename);
+    urlsByVariable.set(match[1], filenames);
+  }
+
+  const filenames = new Set();
+  for (const variable of petVariables) {
+    for (const filename of urlsByVariable.get(variable) || []) {
+      if (!/^[A-Za-z0-9][A-Za-z0-9._-]*\.webp$/.test(filename) || filename.includes('..')) {
+        return { found: false, error: `Unsafe built-in asset filename mapped for pet "${petId}"` };
+      }
+      filenames.add(filename);
+    }
+  }
+
+  if (filenames.size === 0) {
+    return { found: false, error: `No hashed WebP asset mapping for pet "${petId}" in the built-in app bundle` };
+  }
+  if (filenames.size > 1) {
+    return { found: false, error: `Multiple hashed WebP assets mapped for pet "${petId}": ${[...filenames].join(', ')}` };
+  }
+  return { found: true, filename: [...filenames][0] };
+}
+
+function findBuiltinPetEntry(headerJson, petId, asarFileSize, headerOffset, bundleText = null) {
   try {
     const assetsDir = headerJson?.files?.webview?.files?.assets?.files;
     if (!assetsDir || typeof assetsDir !== 'object') {
@@ -148,59 +236,62 @@ function findBuiltinPetEntry(headerJson, petId, asarFileSize, headerOffset) {
     }
 
     const prefix = `${petId}-spritesheet-`;
-    const matches = Object.keys(assetsDir).filter(filename =>
+    let matches = Object.keys(assetsDir).filter(filename =>
       filename.startsWith(prefix) && filename.endsWith('.webp')
     );
 
     if (matches.length === 0) {
-      return { found: false, error: `No built-in entry matching "${prefix}*.webp" under webview/assets` };
+      if (bundleText === null) {
+        return { found: false, error: `No built-in entry matching "${prefix}*.webp" under webview/assets` };
+      }
+      const mapping = findHashedPetAssetFilename(bundleText, petId);
+      if (!mapping.found) return mapping;
+      if (!Object.prototype.hasOwnProperty.call(assetsDir, mapping.filename)) {
+        return { found: false, error: `Mapped built-in asset "${mapping.filename}" is missing under webview/assets` };
+      }
+      matches = [mapping.filename];
     }
     if (matches.length > 1) {
       return { found: false, error: `Multiple built-in entries found for pet "${petId}": ${matches.join(', ')}` };
     }
 
     const filename = matches[0];
-    const entry = assetsDir[filename];
-    if (!entry || typeof entry !== 'object') {
-      return { found: false, error: `Invalid ASAR entry node for ${filename}` };
-    }
-
-    const size = Number(entry.size);
-    if (isNaN(size) || size <= 0 || !Number.isInteger(size)) {
-      return { found: false, error: `Invalid entry size for ${filename}: ${entry.size}` };
-    }
-
-    if (size > MAX_ENTRY_SIZE) {
-      return { found: false, error: `Entry ${filename} size (${size} bytes) exceeds maximum limit of 64 MiB` };
-    }
-
-    let offset;
-    try {
-      offset = BigInt(entry.offset);
-    } catch (_) {
-      return { found: false, error: `Invalid entry offset for ${filename}: ${entry.offset}` };
-    }
-
-    if (offset < 0n) {
-      return { found: false, error: `Negative entry offset for ${filename}` };
-    }
-
-    const totalOffset = BigInt(headerOffset) + offset;
-    const endOffset = totalOffset + BigInt(size);
-    const maxSafeInt = BigInt(Number.MAX_SAFE_INTEGER);
-
-    if (endOffset > maxSafeInt) {
-      return { found: false, error: `Unsafe numeric offset above MAX_SAFE_INTEGER for ${filename}` };
-    }
-
-    if (endOffset > BigInt(asarFileSize)) {
-      return { found: false, error: `Entry ${filename} bounds [${totalOffset}, ${endOffset}] exceed ASAR file size ${asarFileSize}` };
-    }
-
-    return { found: true, filename, offset, size };
+    return validateAsarEntry(assetsDir[filename], filename, asarFileSize, headerOffset);
   } catch (err) {
     return { found: false, error: `Failed to search ASAR entries: ${err.message}` };
   }
+}
+
+function findAppInitialBundleEntries(headerJson, asarFileSize, headerOffset) {
+  const assetsDir = headerJson?.files?.webview?.files?.assets?.files;
+  if (!assetsDir || typeof assetsDir !== 'object') {
+    return { found: false, error: 'No webview/assets directory found in ASAR header' };
+  }
+
+  const names = Object.keys(assetsDir).filter(filename =>
+    /^app-initial-[A-Za-z0-9._-]+\.js$/.test(filename)
+  );
+  if (names.length === 0) {
+    return { found: false, error: 'No app-initial JavaScript bundle found under webview/assets' };
+  }
+  if (names.length > MAX_ASSET_BUNDLE_COUNT) {
+    return { found: false, error: `Too many app-initial JavaScript bundles (${names.length})` };
+  }
+
+  const entries = [];
+  let totalSize = 0;
+  for (const filename of names) {
+    const result = validateAsarEntry(
+      assetsDir[filename], filename, asarFileSize, headerOffset, MAX_ASSET_BUNDLE_SIZE
+    );
+    if (!result.found) return result;
+    totalSize += result.size;
+    if (totalSize > MAX_ASSET_BUNDLE_SCAN_SIZE) {
+      return { found: false, error: 'app-initial JavaScript bundles exceed the total scan limit of 64 MiB' };
+    }
+    entries.push(result);
+  }
+  return { found: true, entries };
 }
 
 function readAsarEntryBytes(asarPath, headerOffset, offset, size, fsMod = fs) {
@@ -325,7 +416,42 @@ function resolveBuiltinPet(petId, deps = {}) {
     return { available: false, error: headerRes.error };
   }
 
-  const entryRes = findBuiltinPetEntry(headerRes.json, petId, headerRes.asarFileSize, headerRes.headerOffset);
+  let entryRes = findBuiltinPetEntry(headerRes.json, petId, headerRes.asarFileSize, headerRes.headerOffset);
+  if (!entryRes.found && entryRes.error.startsWith('No built-in entry matching')) {
+    const bundleRes = findAppInitialBundleEntries(headerRes.json, headerRes.asarFileSize, headerRes.headerOffset);
+    if (!bundleRes.found) {
+      return { available: false, error: `${entryRes.error}; ${bundleRes.error}` };
+    }
+
+    const mappedEntries = new Map();
+    const mappingErrors = [];
+    try {
+      for (const bundleEntry of bundleRes.entries) {
+        const bundleBytes = readAsarEntryBytes(
+          asarPath, headerRes.headerOffset, bundleEntry.offset, bundleEntry.size, fsMod
+        );
+        const mapped = findBuiltinPetEntry(
+          headerRes.json, petId, headerRes.asarFileSize, headerRes.headerOffset,
+          bundleBytes.toString('utf8')
+        );
+        if (mapped.found) mappedEntries.set(mapped.filename, mapped);
+        else mappingErrors.push(mapped.error);
+      }
+    } catch (err) {
+      return { available: false, error: `Failed to read built-in app asset bundle: ${err.message}` };
+    }
+
+    if (mappedEntries.size === 0) {
+      return { available: false, error: `${entryRes.error}; ${mappingErrors.join('; ')}` };
+    }
+    if (mappedEntries.size > 1) {
+      return {
+        available: false,
+        error: `Multiple app-initial bundles map pet "${petId}" to different assets: ${[...mappedEntries.keys()].join(', ')}`,
+      };
+    }
+    entryRes = [...mappedEntries.values()][0];
+  }
   if (!entryRes.found) {
     return { available: false, error: entryRes.error };
   }

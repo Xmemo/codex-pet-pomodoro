@@ -37,7 +37,7 @@ jobs:
           PYTHONPATH=. python -m pytest -q
           xcrun swiftc -typecheck src/companion_renderer.swift src/timer_panel.swift
           zsh -n scripts/install.sh scripts/uninstall.sh scripts/bootstrap.sh scripts/package-release.sh
-          plutil -lint packaging/io.github.codex-ultradian-rhythm.plist packaging/io.github.codex-pet-companion.plist
+          plutil -lint packaging/io.github.codex-pet-companion.plist packaging/companion-renderer-Info.plist
 
       - name: Build release archive
         run: ./scripts/package-release.sh "$GITHUB_REF_NAME"

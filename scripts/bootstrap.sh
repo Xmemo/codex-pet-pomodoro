@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Pinned default stable version
-DEFAULT_VERSION="v0.1.1"
+DEFAULT_VERSION="v0.1.2"
 VERSION="${1:-$DEFAULT_VERSION}"
 
 # Validate version format vMAJOR.MINOR.PATCH
