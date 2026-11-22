@@ -139,14 +139,14 @@ test('T007: bridge.js command/status envelope validation tests', async (t) => {
       kind: 'command',
       command: 'start',
       preset: 'flow',
-      intentionText: 'Focus session',
+      intentionText: 'Create a verifiable result',
       replace: false
     }) + '\n');
     assert.strictEqual(errorCalled, null);
     assert.strictEqual(protocolErrorCalled, null);
     assert.strictEqual(eventCalled, null);
     assert.strictEqual(commandCalled.command, 'start');
-    assert.strictEqual(commandCalled.intentionText, 'Focus session');
+    assert.strictEqual(commandCalled.intentionText, 'Create a verifiable result');
     
     // 4. Send unknown command
     errorCalled = null;

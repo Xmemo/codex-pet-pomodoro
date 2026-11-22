@@ -242,7 +242,9 @@ class TimerEngine:
             raise ValueError("Cannot repeat while a cycle is active.")
 
         preset_key = self.state.preset if self.state.preset in PRESETS else "flow"
-        intention_text = self.state.intention_text or "Focus session"
+        intention_text = (self.state.intention_text or "").strip()
+        if not intention_text:
+            raise ValueError("Cannot repeat without a saved goal. Start a new cycle with a specific goal.")
         return self.start_cycle(preset_key, replace=True, intention_text=intention_text)
 
     def review_cycle(self, outcome: str, text: Optional[str] = None) -> TimerState:

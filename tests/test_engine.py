@@ -57,7 +57,7 @@ class TestTimerEngine(unittest.TestCase):
 
     def test_midpoint_and_transitions(self) -> None:
         # Start flow: work 3000s, rest 600s
-        self.engine.start_cycle("flow", intention_text="Focus session")
+        self.engine.start_cycle("flow", intention_text="Complete the first draft")
 
         # Next event time should be midpoint time = 1000.0 + 1500.0 = 2500.0
         self.assertEqual(self.engine.get_next_event_time(), 2500.0)
@@ -143,6 +143,11 @@ class TestTimerEngine(unittest.TestCase):
         self.engine.repeat_cycle()
         self.assertEqual(self.engine.state.status, "running")
         self.assertEqual(self.engine.state.preset, "start")
+
+    def test_repeat_requires_saved_goal(self) -> None:
+        self.engine.state.intention_text = " \n "
+        with self.assertRaisesRegex(ValueError, "without a saved goal"):
+            self.engine.repeat_cycle()
 
     def test_v2_backward_compatibility(self) -> None:
         v1_data = {
